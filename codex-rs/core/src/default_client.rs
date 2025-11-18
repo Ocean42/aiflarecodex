@@ -8,9 +8,57 @@ use reqwest::header::HeaderValue;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::sync::OnceLock;
+
+/// Append a single HTTP event line to a debug log on disk. Best‑effort only.
+/// Format: "<context> <METHOD> <URL> <STATUS|none>".
+pub(crate) fn log_http_event(method: &Method, url: &str, status: Option<u16>, context: &str) {
+    let log_dir = "/Volumes/devdisk/dev/ai-guard/aiflarecodex/codex-rs/log";
+    let log_path = "/Volumes/devdisk/dev/ai-guard/aiflarecodex/codex-rs/log/http.log";
+
+    if std::fs::create_dir_all(log_dir).is_err() {
+        return;
+    }
+
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
+        let status_str = status
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        let _ = writeln!(file, "{context} {method} {url} {status_str}");
+    }
+}
+
+/// Append a detailed HTTP debug record as JSON.
+/// This is intended for local troubleshooting only and may include request
+/// payloads and response bodies. Do not enable in untrusted environments.
+pub(crate) fn log_http_debug(
+    context: &str,
+    url: &str,
+    payload: &str,
+    body: &str,
+    status: Option<u16>,
+) {
+    let log_dir = "/Volumes/devdisk/dev/ai-guard/aiflarecodex/codex-rs/log";
+    let log_path = "/Volumes/devdisk/dev/ai-guard/aiflarecodex/codex-rs/log/http-debug.log";
+
+    if std::fs::create_dir_all(log_dir).is_err() {
+        return;
+    }
+
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
+        let status_str = status
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        let record = format!(
+            "{{\"context\":\"{context}\",\"url\":{url:?},\"status\":{status_str:?},\"payload\":{payload:?},\"body\":{body:?}}}"
+        );
+        let _ = writeln!(file, "{record}");
+    }
+}
 
 /// Set this to add a suffix to the User-Agent string.
 ///
@@ -117,6 +165,12 @@ impl CodexRequestBuilder {
         match self.builder.send().await {
             Ok(response) => {
                 let request_ids = Self::extract_request_ids(&response);
+                log_http_event(
+                    &self.method,
+                    &self.url,
+                    Some(response.status().as_u16()),
+                    "ok",
+                );
                 tracing::debug!(
                     method = %self.method,
                     url = %self.url,
@@ -130,6 +184,7 @@ impl CodexRequestBuilder {
             }
             Err(error) => {
                 let status = error.status();
+                log_http_event(&self.method, &self.url, status.map(|s| s.as_u16()), "err");
                 tracing::debug!(
                     method = %self.method,
                     url = %self.url,

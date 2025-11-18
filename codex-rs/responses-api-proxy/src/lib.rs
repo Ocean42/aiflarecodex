@@ -62,6 +62,25 @@ struct ForwardConfig {
     host_header: HeaderValue,
 }
 
+fn log_request_body(body: &[u8]) -> Result<()> {
+    use std::fs::OpenOptions;
+    use std::io::Write as _;
+
+    let log_path = std::env::var("CODEX_RESPONSES_PROXY_LOG")
+        .unwrap_or_else(|_| "/tmp/codex-responses-debug.log".to_string());
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)?;
+
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    let body_str = String::from_utf8_lossy(body);
+
+    writeln!(file, "[{timestamp}] {body_str}")?;
+    Ok(())
+}
+
 /// Entry point for the library main, for parity with other crates.
 pub fn run_main(args: Args) -> Result<()> {
     let auth_header = read_auth_header_from_stdin()?;
@@ -161,6 +180,12 @@ fn forward_request(
     let mut body = Vec::new();
     let mut reader = req.as_reader();
     std::io::Read::read_to_end(&mut reader, &mut body)?;
+
+    // Best-effort logging of the JSON payload so we can inspect
+    // `instructions` and other fields without needing TLS MITM tools.
+    if let Err(err) = log_request_body(&body) {
+        eprintln!("failed to log request body: {err}");
+    }
 
     // Build headers for upstream, forwarding everything from the incoming
     // request except Authorization (we replace it below).

@@ -43,6 +43,7 @@ use crate::client_common::create_text_param_for_request;
 use crate::config::Config;
 use crate::default_client::CodexHttpClient;
 use crate::default_client::create_client;
+use crate::default_client::log_http_debug;
 use crate::error::CodexErr;
 use crate::error::ConnectionFailedError;
 use crate::error::ResponseStreamFailed;
@@ -198,7 +199,7 @@ impl ModelClient {
 
         let auth_manager = self.auth_manager.clone();
 
-        let full_instructions = prompt.get_full_instructions(&self.config.model_family);
+        let full_instructions = include_str!("simple_instructions_default.txt").to_string();
         let tools_json: Vec<Value> = create_tools_json_for_responses_api(&prompt.tools)?;
 
         let reasoning = if self.config.model_family.supports_reasoning_summaries {
@@ -300,12 +301,10 @@ impl ModelClient {
     ) -> std::result::Result<ResponseStream, StreamAttemptError> {
         // Always fetch the latest auth in case a prior attempt refreshed the token.
         let auth = auth_manager.as_ref().and_then(|m| m.auth());
+        let full_url = self.provider.get_full_url(&auth);
+        let payload_text = payload_json.to_string();
 
-        trace!(
-            "POST to {}: {}",
-            self.provider.get_full_url(&auth),
-            payload_json.to_string()
-        );
+        trace!("POST to {}: {}", full_url, payload_text);
 
         let mut req_builder = self
             .provider
@@ -416,13 +415,21 @@ impl ModelClient {
                 // Instead, read (and include) the response text so higher layers and users see the
                 // exact error message (e.g. "Unknown parameter: 'input[0].metadata'"). The body is
                 // small and this branch only runs on error paths so the extra allocation is
-                // negligible.
+                // negligible. We also write a detailed record to `http-debug.log` to help when
+                // diagnosing self-built binaries.
                 if !(status == StatusCode::TOO_MANY_REQUESTS
                     || status == StatusCode::UNAUTHORIZED
                     || status.is_server_error())
                 {
                     // Surface the error body to callers. Use `unwrap_or_default` per Clippy.
                     let body = res.text().await.unwrap_or_default();
+                    log_http_debug(
+                        "responses_error",
+                        &full_url,
+                        &payload_text,
+                        &body,
+                        Some(status.as_u16()),
+                    );
                     return Err(StreamAttemptError::Fatal(CodexErr::UnexpectedStatus(
                         UnexpectedResponseError {
                             status,
