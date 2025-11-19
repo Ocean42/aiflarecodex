@@ -17,7 +17,7 @@ export interface ModelProviderInfo {
 }
 
 const DEFAULT_REQUEST_MAX_RETRIES = 4;
-const DEFAULT_STREAM_MAX_RETRIES = 4;
+const DEFAULT_STREAM_MAX_RETRIES = 5;
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 45_000;
 
 function defaultWireApiForProvider(id: string): WireApi {
@@ -51,4 +51,3 @@ export function getDefaultModelProviderInfo(providerId: string): ModelProviderIn
     requiresOpenaiAuth: requiresOpenaiAuth(key),
   };
 }
-

@@ -126,10 +126,15 @@ function formatHistoryForDisplay(items: Array<AgentResponseItem>): {
 
     const { name: toolName, arguments: argsString } = item as unknown as {
       name: unknown;
-      arguments: unknown;
+      arguments: string;
     };
 
-    if (typeof argsString !== "string") {
+    if (
+      typeof toolName !== "string" ||
+      toolName.length === 0 ||
+      typeof argsString !== "string" ||
+      argsString.length === 0
+    ) {
       // Malformed – still record the tool name to give users maximal context.
       if (typeof toolName === "string" && toolName.length > 0) {
         commands.push(toolName);
@@ -258,3 +263,4 @@ function processNonExecTool(
 
   return summary;
 }
+

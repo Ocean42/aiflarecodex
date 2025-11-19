@@ -1,5 +1,5 @@
 import type { RateLimitSnapshot } from "./rateLimitTypes.js";
-import type { ResponseEvent as WireResponseEvent } from "../utils/responses.js";
+import type { WireResponseEvent } from "../utils/wire-response-events.js";
 
 export interface TokenUsage {
   inputTokens: number;

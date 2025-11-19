@@ -43,14 +43,7 @@ export default function HelpOverlay({
           <Text color="cyan">/approval</Text> – switch auto‑approval mode
         </Text>
         <Text>
-          <Text color="cyan">/history</Text> – show command &amp; file history
-          for this session
-        </Text>
-        <Text>
           <Text color="cyan">/clear</Text> – clear screen &amp; context
-        </Text>
-        <Text>
-          <Text color="cyan">/clearhistory</Text> – clear command history
         </Text>
         <Text>
           <Text color="cyan">/bug</Text> – generate a prefilled GitHub issue URL

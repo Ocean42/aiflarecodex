@@ -4,6 +4,8 @@ import { fileTypeFromBuffer } from "file-type";
 import fs from "fs/promises";
 import path from "path";
 
+import { resolveWorkspaceFile } from "./resolve-workspace-file.js";
+
 export async function createInputItem(
   text: string,
   images: Array<string>,
@@ -17,7 +19,10 @@ export async function createInputItem(
   for (const filePath of images) {
     try {
       /* eslint-disable no-await-in-loop */
-      const binary = await fs.readFile(filePath);
+      const resolvedPath = path.isAbsolute(filePath)
+        ? filePath
+        : await resolveWorkspaceFile(filePath);
+      const binary = await fs.readFile(resolvedPath);
       const kind = await fileTypeFromBuffer(binary);
       /* eslint-enable no-await-in-loop */
       const encoded = binary.toString("base64");

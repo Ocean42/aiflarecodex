@@ -1,4 +1,7 @@
-import type { CommandConfirmation } from "./agent-loop.js";
+import type {
+  CommandApprovalContext,
+  CommandConfirmation,
+} from "./agent-loop.js";
 import type { ApplyPatchCommand, ApprovalPolicy } from "../../approvals.js";
 import type {
   ExecInput,
@@ -111,6 +114,7 @@ export async function handleExecCommand(
   getCommandConfirmation: (
     command: Array<string>,
     applyPatch: ApplyPatchCommand | undefined,
+    context?: CommandApprovalContext,
   ) => Promise<CommandConfirmation>,
   abortSignal?: AbortSignal,
   hooks?: ExecCommandHooks,
@@ -147,11 +151,19 @@ export async function handleExecCommand(
   let runInSandbox: boolean;
   switch (safety.type) {
     case "ask-user": {
+      const approvalContext: CommandApprovalContext = {
+        callId: hooks?.callId,
+        workingDirectory: args.workdir,
+        approvalPolicy: policy,
+        sandbox: "host",
+        reason: describeManualApprovalReason(policy),
+      };
       const review = await askUserPermission(
         args,
         safety.applyPatch,
         getCommandConfirmation,
         hooks,
+        approvalContext,
       );
       if (review != null) {
         return review;
@@ -223,11 +235,20 @@ export async function handleExecCommand(
     config.fullAutoErrorMode &&
     config.fullAutoErrorMode === FullAutoErrorMode.ASK_USER
   ) {
+    const retryContext: CommandApprovalContext = {
+      callId: hooks?.callId,
+      workingDirectory: summary.workdir,
+      approvalPolicy: policy,
+      sandbox: "host",
+      retryingWithoutSandbox: true,
+      reason: `Sandboxed execution exited with code ${summary.exitCode}. Approve to retry outside the sandbox.`,
+    };
     const review = await askUserPermission(
       args,
       safety.applyPatch,
       getCommandConfirmation,
       hooks,
+      retryContext,
     );
     if (review != null) {
       return review;
@@ -397,12 +418,15 @@ async function askUserPermission(
   getCommandConfirmation: (
     command: Array<string>,
     applyPatch: ApplyPatchCommand | undefined,
+    context?: CommandApprovalContext,
   ) => Promise<CommandConfirmation>,
   hooks?: ExecCommandHooks,
+  context?: CommandApprovalContext,
 ): Promise<HandleExecCommandResult | null> {
   const confirmation = await getCommandConfirmation(
     args.cmd,
     applyPatchCommand,
+    context,
   );
   const { review: decision, customDenyMessage, explanation } = confirmation;
 
@@ -446,5 +470,18 @@ async function askUserPermission(
     };
   } else {
     return null;
+  }
+}
+
+function describeManualApprovalReason(policy: ApprovalPolicy): string {
+  switch (policy) {
+    case "suggest":
+      return "Suggestion mode requires manual approval before running commands.";
+    case "auto-edit":
+      return "Auto-edit mode paused this command so you can confirm it before it modifies files.";
+    case "full-auto":
+      return "Full-auto mode needs confirmation before running this command without sandbox restrictions.";
+    default:
+      return "Manual approval required before running this command.";
   }
 }

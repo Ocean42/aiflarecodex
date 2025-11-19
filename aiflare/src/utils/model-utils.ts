@@ -5,10 +5,7 @@ import { approximateTokensUsed } from "./approximate-tokens-used.js";
 import { getApiKey } from "./config.js";
 import { type SupportedModelId, openAiModelInfo } from "./model-info.js";
 import { createOpenAIClient } from "./openai-client.js";
-import {
-  isAgentGeneratedEvent,
-  isNativeResponseItem,
-} from "./agent/agent-events.js";
+import { isNativeResponseItem } from "./agent/agent-events.js";
 
 const MODEL_LIST_TIMEOUT_MS = 2_000; // 2 seconds
 export const RECOMMENDED_MODELS: Array<string> = ["o4-mini", "o3"];
@@ -153,9 +150,10 @@ function isUserMessage(
  * exact same message would appear twice in the transcript.
  *
  * The new rules are therefore:
- *   1.  If a {@link ResponseItem} has an {@code id} keep only the *first*
- *       occurrence of that {@code id} (this retains the previous behaviour for
- *       assistant / tool messages).
+ *   1.  If a {@link ResponseItem} has an {@code id} keep a **single** entry for
+ *       that {@code id}, but replace the existing value whenever a new item with
+ *       the same {@code id} arrives. This allows the CLI to stream updates in
+ *       place while still collapsing duplicates.
  *   2.  Additionally, collapse *consecutive* user messages with identical
  *       content.  Two messages are considered identical when their serialized
  *       {@code content} array matches exactly.  We purposefully restrict this
@@ -174,10 +172,8 @@ export function uniqueById(
         ? ((item as { id?: string }).id as string)
         : undefined;
     if (itemId && idToIndex.has(itemId)) {
-      if (isAgentGeneratedEvent(item)) {
-        const index = idToIndex.get(itemId)!;
-        deduped[index] = item;
-      }
+      const index = idToIndex.get(itemId)!;
+      deduped[index] = item;
       continue;
     }
     if (!isNativeResponseItem(item)) {

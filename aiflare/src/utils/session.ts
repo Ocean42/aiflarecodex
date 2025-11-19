@@ -9,10 +9,14 @@ export type TerminalChatSession = {
   version: string;
   /** The model used for the conversation */
   model: string;
+  /** Provider used for the turn (defaults to openai when omitted) */
+  provider?: string;
   /** ISO timestamp noting when the session was persisted */
   timestamp: string;
   /** Optional custom instructions that were active for the run */
   instructions: string;
+  /** Last known response id so a resumed session can continue streaming */
+  lastResponseId?: string;
 };
 
 let sessionId = "";

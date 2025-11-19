@@ -5,7 +5,7 @@ export interface SlashCommand {
   description: string;
 }
 
-export const SLASH_COMMANDS: Array<SlashCommand> = [
+const BASE_SLASH_COMMANDS: Array<SlashCommand> = [
   {
     command: "/status",
     description: "Show current session configuration and token usage",
@@ -15,16 +15,10 @@ export const SLASH_COMMANDS: Array<SlashCommand> = [
     description: "Clear conversation history and free up context",
   },
   {
-    command: "/clearhistory",
-    description: "Clear command history",
-  },
-  {
     command: "/compact",
     description:
       "Clear conversation history but keep a summary in context. Optional: /compact [instructions for summarization]",
   },
-  { command: "/history", description: "Open command history" },
-  { command: "/sessions", description: "Browse previous sessions" },
   { command: "/help", description: "Show list of commands" },
   { command: "/model", description: "Open model selection panel" },
   { command: "/approval", description: "Open approval mode selection panel" },
@@ -42,3 +36,18 @@ export const SLASH_COMMANDS: Array<SlashCommand> = [
     description: "Log out by removing saved ChatGPT/API credentials",
   },
 ];
+
+export const SLASH_COMMANDS: Array<SlashCommand> =
+  process.env["VITEST"] === "true"
+    ? [
+        ...BASE_SLASH_COMMANDS,
+        {
+          command: "/plan-test",
+          description: "Test-only helper that emits a sample plan update",
+        },
+        {
+          command: "/approval-test",
+          description: "Test-only helper that opens the approval modal",
+        },
+      ]
+    : BASE_SLASH_COMMANDS;

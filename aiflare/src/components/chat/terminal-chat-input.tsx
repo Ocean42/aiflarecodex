@@ -16,13 +16,12 @@ import { getFileSystemSuggestions } from "../../utils/file-system-suggestions.js
 import { expandFileTags } from "../../utils/file-tag-utils";
 import { createInputItem } from "../../utils/input-utils.js";
 import { log } from "../../utils/logger/log.js";
-import { setSessionId } from "../../utils/session.js";
 import { SLASH_COMMANDS, type SlashCommand } from "../../utils/slash-commands";
 import {
   loadCommandHistory,
   addToHistory,
 } from "../../utils/storage/command-history.js";
-import { clearTerminal, onExit } from "../../utils/terminal.js";
+import { onExit } from "../../utils/terminal.js";
 import { Box, Text, useApp, useInput, useStdin } from "ink";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -52,20 +51,25 @@ export default function TerminalChatInput({
   setLastResponseId,
   setItems,
   contextLeftPercent,
-  openOverlay,
   openModelOverlay,
   openApprovalOverlay,
   openHelpOverlay,
   openDiffOverlay,
-  openSessionsOverlay,
   onCompact,
   onStatus,
   onLogout,
   onTestPlan,
+  onTestApproval,
+  onRunLocalCommand,
+  onClearConversation,
   interruptAgent,
   active,
   thinkingSeconds,
   items = [],
+  queuedPrompts = [],
+  onRecallQueuedPrompt,
+  restoreText,
+  onConsumeRestoreText,
 }: {
   isNew: boolean;
   loading: boolean;
@@ -79,21 +83,26 @@ export default function TerminalChatInput({
   setLastResponseId: (lastResponseId: string) => void;
   setItems: React.Dispatch<React.SetStateAction<Array<AgentResponseItem>>>;
   contextLeftPercent: number;
-  openOverlay: () => void;
   openModelOverlay: () => void;
   openApprovalOverlay: () => void;
   openHelpOverlay: () => void;
   openDiffOverlay: () => void;
-  openSessionsOverlay: () => void;
   onCompact: () => void;
   onStatus: () => void;
   onLogout: () => void;
   onTestPlan?: () => void;
+  onTestApproval?: () => void;
+  onRunLocalCommand?: (command: string) => void;
+  onClearConversation?: () => void;
   interruptAgent: () => void;
   active: boolean;
   thinkingSeconds: number;
   // New: current conversation items so we can include them in bug reports
   items?: Array<AgentResponseItem>;
+  queuedPrompts?: Array<string>;
+  onRecallQueuedPrompt?: () => string | null;
+  restoreText?: string | null;
+  onConsumeRestoreText?: () => void;
 }): React.ReactElement {
   // Slash command suggestion index
   const [selectedSlashSuggestion, setSelectedSlashSuggestion] =
@@ -119,6 +128,19 @@ export default function TerminalChatInput({
   // Track the caret row across keystrokes
   const prevCursorRow = useRef<number | null>(null);
   const prevCursorWasAtLastRow = useRef<boolean>(false);
+  useEffect(() => {
+    if (!restoreText) {
+      return;
+    }
+    setInput((prev) =>
+      prev && prev.length > 0 ? `${restoreText}\n${prev}` : restoreText,
+    );
+    setEditorState((s) => ({
+      key: s.key + 1,
+      initialCursorOffset: restoreText.length,
+    }));
+    onConsumeRestoreText?.();
+  }, [restoreText, onConsumeRestoreText]);
 
   // --- Helper for updating input, remounting editor, and moving cursor to end ---
   const applyFsSuggestion = useCallback((newInputText: string) => {
@@ -253,6 +275,19 @@ export default function TerminalChatInput({
 
   useInput(
     (_input, _key) => {
+      if (_key.upArrow && _key.alt && onRecallQueuedPrompt) {
+        const recalled = onRecallQueuedPrompt();
+        if (recalled) {
+          setInput(recalled);
+          setDraftInput(recalled);
+          setEditorState((s) => ({
+            key: s.key + 1,
+            initialCursorOffset: recalled.length,
+          }));
+          setHistoryIndex(null);
+        }
+        return;
+      }
       // Slash command navigation: up/down to select, enter to fill
       if (!confirmationPrompt && !loading && input.trim().startsWith("/")) {
         const prefix = input.trim();
@@ -295,9 +330,13 @@ export default function TerminalChatInput({
             return;
           }
           if (_key.return) {
-            // Execute the currently selected slash command
+            // Execute the currently selected slash command (prefer an exact match)
+            const exact = matches.find(
+              (cmd) => cmd.command === input.trim(),
+            );
             const selIdx = selectedSlashSuggestion;
-            const cmdObj = matches[selIdx];
+            const cmdObj =
+              exact ?? matches[selIdx] ?? (matches.length > 0 ? matches[0] : undefined);
             if (cmdObj) {
               const cmd = cmdObj.command;
               setInput("");
@@ -306,12 +345,6 @@ export default function TerminalChatInput({
               switch (cmd) {
                 case "/status":
                   onStatus();
-                  break;
-                case "/history":
-                  openOverlay();
-                  break;
-                case "/sessions":
-                  openSessionsOverlay();
                   break;
                 case "/help":
                   openHelpOverlay();
@@ -332,10 +365,7 @@ export default function TerminalChatInput({
                   onSubmit(cmd);
                   break;
                 case "/clear":
-                  onSubmit(cmd);
-                  break;
-                case "/clearhistory":
-                  onSubmit(cmd);
+                  onClearConversation?.();
                   break;
                 case "/logout":
                   onLogout();
@@ -343,6 +373,11 @@ export default function TerminalChatInput({
                 case "/plan-test":
                   if (process.env["VITEST"]) {
                     onTestPlan?.();
+                  }
+                  break;
+                case "/approval-test":
+                  if (process.env["VITEST"]) {
+                    onTestApproval?.();
                   }
                   break;
                 default:
@@ -521,13 +556,10 @@ export default function TerminalChatInput({
 
       if (!inputValue) {
         return;
-      } else if (inputValue === "/history") {
+      } else if (inputValue.startsWith("!")) {
+        const localCommand = inputValue.slice(1).trim();
         setInput("");
-        openOverlay();
-        return;
-      } else if (inputValue === "/sessions") {
-        setInput("");
-        openSessionsOverlay();
+        onRunLocalCommand?.(localCommand);
         return;
       } else if (inputValue === "/help") {
         setInput("");
@@ -549,6 +581,18 @@ export default function TerminalChatInput({
         setInput("");
         openModelOverlay();
         return;
+      } else if (inputValue === "/plan-test") {
+        setInput("");
+        if (process.env["VITEST"]) {
+          onTestPlan?.();
+        }
+        return;
+      } else if (inputValue === "/approval-test") {
+        setInput("");
+        if (process.env["VITEST"]) {
+          onTestApproval?.();
+        }
+        return;
       } else if (inputValue.startsWith("/approval")) {
         setInput("");
         openApprovalOverlay();
@@ -556,12 +600,6 @@ export default function TerminalChatInput({
       } else if (inputValue === "/logout") {
         setInput("");
         onLogout();
-        return;
-      } else if (inputValue === "/plan-test") {
-        setInput("");
-        if (process.env["VITEST"]) {
-          onTestPlan?.();
-        }
         return;
       } else if (["exit", "q", ":q"].includes(inputValue)) {
         setInput("");
@@ -573,69 +611,7 @@ export default function TerminalChatInput({
         return;
       } else if (inputValue === "/clear" || inputValue === "clear") {
         setInput("");
-        setSessionId("");
-        setLastResponseId("");
-
-        // Clear the terminal screen (including scrollback) before resetting context.
-        clearTerminal();
-
-        // Emit a system message to confirm the clear action.  We *append*
-        // it so Ink's <Static> treats it as new output and actually renders it.
-        setItems((prev) => {
-          const filteredOldItems = prev.filter((item) => {
-            // Remove any token‑heavy entries (user/assistant turns and function calls)
-            if (
-              item.type === "message" &&
-              (item.role === "user" || item.role === "assistant")
-            ) {
-              return false;
-            }
-            if (
-              item.type === "function_call" ||
-              item.type === "function_call_output"
-            ) {
-              return false;
-            }
-            return true; // keep developer/system and other meta entries
-          });
-
-          return [
-            ...filteredOldItems,
-            {
-              id: `clear-${Date.now()}`,
-              type: "message",
-              role: "system",
-              content: [{ type: "input_text", text: "Terminal cleared" }],
-            },
-          ];
-        });
-
-        return;
-      } else if (inputValue === "/clearhistory") {
-        setInput("");
-
-        // Import clearCommandHistory function to avoid circular dependencies
-        // Using dynamic import to lazy-load the function
-        import("../../utils/storage/command-history.js").then(
-          async ({ clearCommandHistory }) => {
-            await clearCommandHistory();
-            setHistory([]);
-
-            // Emit a system message to confirm the history clear action.
-            setItems((prev) => [
-              ...prev,
-              {
-                id: `clearhistory-${Date.now()}`,
-                type: "message",
-                role: "system",
-                content: [
-                  { type: "input_text", text: "Command history cleared" },
-                ],
-              },
-            ]);
-          },
-        );
-
+        onClearConversation?.();
         return;
       } else if (inputValue === "/bug") {
         // Generate a GitHub bug report URL pre‑filled with session details.
@@ -782,12 +758,10 @@ export default function TerminalChatInput({
       app,
       setHistory,
       setHistoryIndex,
-      openOverlay,
       openApprovalOverlay,
       openModelOverlay,
       openHelpOverlay,
       openDiffOverlay,
-      openSessionsOverlay,
       history,
       onCompact,
       skipNextSubmit,
@@ -860,6 +834,18 @@ export default function TerminalChatInput({
           </Box>
         )}
       </Box>
+      {queuedPrompts.length > 0 && (
+        <Box flexDirection="column" paddingX={2} marginBottom={1}>
+          <Text color="yellow">
+            Queued prompts ({queuedPrompts.length}) — waiting for the current turn.
+          </Text>
+          {queuedPrompts.slice(0, 3).map((prompt, idx) => (
+            <Text key={`${prompt}-${idx}`} dimColor>
+              {formatQueuedPromptPreview(prompt)}
+            </Text>
+          ))}
+        </Box>
+      )}
       {/* Slash command autocomplete suggestions */}
       {input.trim().startsWith("/") && (
         <Box flexDirection="column" paddingX={2} marginBottom={1}>
@@ -1064,4 +1050,12 @@ function TerminalChatInputThinking({
       </Box>
     </Box>
   );
+}
+
+function formatQueuedPromptPreview(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length > 80) {
+    return `${normalized.slice(0, 77)}…`;
+  }
+  return normalized;
 }

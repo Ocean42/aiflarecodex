@@ -89,6 +89,30 @@ export default function TerminalChatResponseItem({
         );
       case "reasoning_section_break":
         return <Text dimColor>{"─".repeat(20)}</Text>;
+      case "tool_call_started":
+        return (
+          <Text color="cyan">
+            Tool {item.toolName} started (call {item.callId})
+          </Text>
+        );
+      case "tool_call_output": {
+        const color = item.status === "ok" ? "green" : "red";
+        const parts = [
+          item.durationSeconds !== undefined
+            ? `${item.durationSeconds}s`
+            : undefined,
+          item.outputCount !== undefined
+            ? `${item.outputCount} output`
+            : undefined,
+        ].filter(Boolean);
+        return (
+          <Text color={color}>
+            Tool {item.toolName} {item.status === "ok" ? "completed" : "failed"}
+            {parts.length > 0 ? ` (${parts.join(", ")})` : ""}
+            {item.error ? ` – ${item.error}` : ""}
+          </Text>
+        );
+      }
       default:
         return <Text>{JSON.stringify(item)}</Text>;
     }

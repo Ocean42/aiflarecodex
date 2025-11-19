@@ -20,6 +20,8 @@ import { load as loadYaml, dump as dumpYaml } from "js-yaml";
 import { homedir } from "os";
 import { dirname, join, extname, resolve as resolvePath } from "path";
 import { loadAuthDotJsonSync } from "../backend/authModel.js";
+import type { McpServerDefinition } from "./mcp/config.js";
+import { parseMcpServers } from "./mcp/config.js";
 
 // ---------------------------------------------------------------------------
 // User‑wide environment config (~/.codey.env)
@@ -203,6 +205,8 @@ export type StoredConfig = {
    * terminal output.
    */
   fileOpener?: FileOpenerScheme;
+  mcpServers?: Record<string, unknown>;
+  experimentalUseRmcpClient?: boolean;
 };
 
 // Minimal config written on first run.  An *empty* model string ensures that
@@ -250,6 +254,8 @@ export type AppConfig = {
     };
   };
   fileOpener?: FileOpenerScheme;
+  mcpServers: Record<string, McpServerDefinition>;
+  experimentalUseRmcpClient?: boolean;
 };
 
 // Formatting (quiet mode-only).
@@ -414,6 +420,9 @@ export const loadConfig = (
     }
   }
 
+  const instructionsFilePathResolved = instructionsPath
+    ? resolvePath(instructionsPath)
+    : INSTRUCTIONS_FILEPATH;
   const userInstructions = InstructionsManager.getDefaultInstructions();
 
   const cwd = options.cwd ?? process.cwd();
@@ -540,6 +549,21 @@ export const loadConfig = (
 
   // Merge default providers with user configured providers in the config.
   config.providers = { ...providers, ...storedConfig.providers };
+
+  const rawMcpServers =
+    (storedConfig as { mcp_servers?: Record<string, unknown> }).mcp_servers ??
+    storedConfig.mcpServers;
+  config.mcpServers = parseMcpServers(
+    rawMcpServers && typeof rawMcpServers === "object"
+      ? (rawMcpServers as Record<string, unknown>)
+      : undefined,
+  );
+  config.experimentalUseRmcpClient =
+    storedConfig.experimentalUseRmcpClient === true ||
+    Boolean(
+      (storedConfig as { experimental_use_rmcp_client?: boolean })
+        .experimental_use_rmcp_client,
+    );
 
   return config;
 };

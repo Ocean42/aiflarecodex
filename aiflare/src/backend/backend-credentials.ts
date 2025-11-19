@@ -19,9 +19,6 @@ export class BackendCredentials {
 
   static ensure(): BackendCredentials {
     const authFile = getAuthFilePath();
-    // Helpful visibility when tests/CLI resolve credentials.
-    // eslint-disable-next-line no-console
-    console.info(`[backend-credentials] resolving tokens via ${authFile}`);
     const auth = loadAuthDotJsonSync();
     if (!auth || !auth.tokens) {
       throw new Error(

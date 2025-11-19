@@ -17,11 +17,14 @@ export type AppRollout = {
   items: Array<AgentResponseItem>;
 };
 
+export type AppResume = AppRollout & { path: string };
+
 type Props = {
   prompt?: string;
   config: AppConfig;
   imagePaths?: Array<string>;
   rollout?: AppRollout;
+  resume?: AppResume;
   approvalPolicy: ApprovalPolicy;
   additionalWritableRoots: ReadonlyArray<string>;
   fullStdout: boolean;
@@ -31,6 +34,7 @@ export default function App({
   prompt,
   config,
   rollout,
+  resume,
   imagePaths,
   approvalPolicy,
   additionalWritableRoots,
@@ -100,6 +104,7 @@ export default function App({
       config={config}
       prompt={prompt}
       imagePaths={imagePaths}
+      resume={resume}
       approvalPolicy={approvalPolicy}
       additionalWritableRoots={additionalWritableRoots}
       fullStdout={fullStdout}

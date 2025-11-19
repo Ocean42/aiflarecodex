@@ -1,15 +1,20 @@
-import type { AppRollout } from "../../app.js";
+import type { AppResume } from "../../app.js";
 import type { ApplyPatchCommand, ApprovalPolicy } from "../../approvals.js";
-import type { CommandConfirmation } from "../../utils/agent/agent-loop.js";
+import type {
+  CommandApprovalContext,
+  CommandConfirmation,
+} from "../../utils/agent/agent-loop.js";
 import type { AppConfig } from "../../utils/config.js";
 import type { ColorName } from "chalk";
 import type {
   AgentResponseItem,
 } from "../../utils/agent/agent-events.js";
-import type { ResponseItem } from "openai/resources/responses/responses.mjs";
+import type {
+  ResponseInputItem,
+  ResponseItem,
+} from "openai/resources/responses/responses.mjs";
 
 import TerminalChatInput from "./terminal-chat-input.js";
-import TerminalChatPastRollout from "./terminal-chat-past-rollout.js";
 import { TerminalChatToolCallCommand } from "./terminal-chat-tool-call-command.js";
 import TerminalMessageHistory from "./terminal-message-history.js";
 import { formatCommandForDisplay } from "../../format-command.js";
@@ -36,26 +41,23 @@ import { CLI_VERSION } from "../../version.js";
 import { fetchBackendRateLimits } from "../../backend/status.js";
 import { getAuthDebugInfoSync } from "../../backend/authModel.js";
 import { formatPlanUpdate } from "../../utils/agent/plan-utils.js";
+import { setSessionId } from "../../utils/session.js";
+import { clearTerminal } from "../../utils/terminal.js";
 import ApprovalModeOverlay from "../approval-mode-overlay.js";
 import DiffOverlay from "../diff-overlay.js";
 import HelpOverlay from "../help-overlay.js";
-import HistoryOverlay from "../history-overlay.js";
 import ModelOverlay from "../model-overlay.js";
-import SessionsOverlay from "../sessions-overlay.js";
 import chalk from "chalk";
-import fs from "fs/promises";
 import { Box, Text } from "ink";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { inspect } from "util";
 import { existsSync, rmSync } from "fs";
 import { getAuthFilePath } from "../../utils/codexHome.js";
-import { formatPlanUpdate } from "../../utils/agent/plan-utils.js";
 
 export type OverlayModeType =
   | "none"
-  | "history"
-  | "sessions"
   | "model"
   | "approval"
   | "help"
@@ -65,9 +67,16 @@ type Props = {
   config: AppConfig;
   prompt?: string;
   imagePaths?: Array<string>;
+  resume?: AppResume;
   approvalPolicy: ApprovalPolicy;
   additionalWritableRoots: ReadonlyArray<string>;
   fullStdout: boolean;
+};
+
+type QueuedPrompt = {
+  id: string;
+  items: Array<ResponseInputItem>;
+  preview: string;
 };
 
 const colorsByPolicy: Record<ApprovalPolicy, ColorName | undefined> = {
@@ -150,21 +159,51 @@ export default function TerminalChat({
   config,
   prompt: _initialPrompt,
   imagePaths: _initialImagePaths,
+  resume,
   approvalPolicy: initialApprovalPolicy,
   additionalWritableRoots,
   fullStdout,
 }: Props): React.ReactElement {
   const isTestEnv = process.env["VITEST"] === "true";
   const notify = Boolean(config.notify);
-  const [model, setModel] = useState<string>(config.model);
-  const [provider, setProvider] = useState<string>(config.provider || "openai");
-  const [lastResponseId, setLastResponseId] = useState<string | null>(null);
-  const [items, setItems] = useState<Array<AgentResponseItem>>([]);
+  const [model, setModel] = useState<string>(
+    resume?.session.model ?? config.model,
+  );
+  const [provider, setProvider] = useState<string>(
+    resume?.session.provider ?? (config.provider || "openai"),
+  );
+  const initialItems = useMemo(
+    () => resume?.items ?? [],
+    [resume?.items],
+  );
+  const [items, setItems] = useState<Array<AgentResponseItem>>(initialItems);
+  const [historyKey, setHistoryKey] = useState(0);
+  const initialLastResponseId = resume?.session.lastResponseId?.trim() ?? "";
+  const [lastResponseId, setLastResponseIdState] = useState<string | null>(
+    initialLastResponseId.length > 0 ? initialLastResponseId : null,
+  );
+  const lastResponseIdRef = useRef<string | null>(
+    initialLastResponseId.length > 0 ? initialLastResponseId : null,
+  );
+  const updateLastResponseId = useCallback((value: string | null | undefined) => {
+    const normalized = value && value.length > 0 ? value : null;
+    lastResponseIdRef.current = normalized;
+    setLastResponseIdState(normalized);
+  }, []);
   const [loading, setLoading] = useState<boolean>(false);
   const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>(
     initialApprovalPolicy,
   );
   const [thinkingSeconds, setThinkingSeconds] = useState(0);
+  const [queuedPrompts, setQueuedPrompts] = useState<Array<QueuedPrompt>>([]);
+  const [restoreQueuedText, setRestoreQueuedText] = useState<string | null>(
+    null,
+  );
+  const queuedPromptSummaries = useMemo(
+    () => queuedPrompts.map((entry) => entry.preview),
+    [queuedPrompts],
+  );
+  const launchingQueuedRunRef = useRef(false);
 
   const handleCompact = async () => {
     setLoading(true);
@@ -230,8 +269,176 @@ export default function TerminalChat({
     explanation,
     submitConfirmation,
   } = useConfirmation();
+
+  const handleSubmitInput = useCallback(
+    (inputItems: Array<ResponseInputItem>) => {
+      if (!agentRef.current) {
+        return;
+      }
+      if (loading || confirmationPrompt != null) {
+        const preview = extractPromptPreview(inputItems);
+        setQueuedPrompts((prev) => [
+          ...prev,
+          {
+            id: randomUUID(),
+            items: cloneInputItems(inputItems),
+            preview,
+          },
+        ]);
+        return;
+      }
+      agentRef.current.run(
+        inputItems,
+        lastResponseIdRef.current ?? "",
+      );
+    },
+    [loading, confirmationPrompt],
+  );
+
+  const recallQueuedPrompt = useCallback((): string | null => {
+    let recalled: string | null = null;
+    setQueuedPrompts((prev) => {
+      if (prev.length === 0) {
+        return prev;
+      }
+      const copy = [...prev];
+      const entry = copy.pop();
+      recalled = entry?.preview ?? null;
+      return copy;
+    });
+    return recalled;
+  }, []);
+
+  const runApprovalTest = useCallback(() => {
+    if (!isTestEnv) {
+      return;
+    }
+    const context: CommandApprovalContext = {
+      callId: randomUUID(),
+      workingDirectory: process.cwd(),
+      approvalPolicy,
+      sandbox: "sandbox",
+      reason: "Test approval flow – confirm to continue.",
+    };
+    requestConfirmation(
+      <TerminalChatToolCallCommand
+        commandForDisplay={`bash -lc "echo approval-test"`}
+        context={context}
+      />,
+    )
+      .then(({ decision }) => {
+        setItems((prev) => [
+          ...prev,
+          {
+            id: `approval-test-${Date.now()}`,
+            type: "message",
+            role: "system",
+            content: [
+              {
+                type: "input_text",
+                text: `Test approval decision: ${decision}`,
+              },
+            ],
+          } as ResponseItem,
+        ]);
+      })
+      .catch((error) => {
+        setItems((prev) => [
+          ...prev,
+          {
+            id: `approval-test-error-${Date.now()}`,
+            type: "message",
+            role: "system",
+            content: [
+              {
+                type: "input_text",
+                text: `Approval test failed: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              },
+            ],
+          } as ResponseItem,
+        ]);
+      });
+  }, [approvalPolicy, isTestEnv, requestConfirmation, setItems]);
+
+  const runLocalCommand = useCallback(
+    async (commandText: string) => {
+      const agent = agentRef.current;
+      if (!agent || !commandText.trim()) {
+        return;
+      }
+      const userMessage: ResponseItem = {
+        id: `local-user-${Date.now()}`,
+        type: "message",
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: `!${commandText}`,
+          },
+        ],
+      };
+      setItems((prev) => {
+        const updated = uniqueById([...prev, userMessage]);
+        const savedPath = saveRollout(sessionIdRef.current, updated, {
+          instructions: config.instructions,
+          model,
+          provider,
+          lastResponseId: lastResponseIdRef.current,
+          filePath: sessionFilePathRef.current,
+        });
+        sessionFilePathRef.current = savedPath;
+        return updated;
+      });
+      try {
+        await agent.runLocalShellCommand(commandText);
+      } catch (error) {
+        setItems((prev) => [
+          ...prev,
+          {
+            id: `local-error-${Date.now()}`,
+            type: "message",
+            role: "system",
+            content: [
+              {
+                type: "input_text",
+                text: `Local command failed: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              },
+            ],
+          } as ResponseItem,
+        ]);
+      }
+    },
+    [config.instructions, model, provider, setItems],
+  );
+
+  const clearConversation = useCallback(() => {
+    agentRef.current?.cancel();
+    setLoading(false);
+    clearTerminal();
+    setSessionId("");
+    sessionIdRef.current = randomUUID();
+    sessionFilePathRef.current = undefined;
+    setQueuedPrompts([]);
+    setRestoreQueuedText(null);
+    updateLastResponseId(null);
+    lastResponseIdRef.current = null;
+    agentRef.current?.resetConversation?.();
+    log("TerminalChat: /clear invoked – resetting items");
+    setItems([
+      {
+        id: `clear-${Date.now()}`,
+        type: "message",
+        role: "system",
+        content: [{ type: "input_text", text: "Terminal cleared" }],
+      } as ResponseItem,
+    ]);
+    setHistoryKey((key) => key + 1);
+  }, [setItems, updateLastResponseId]);
   const [overlayMode, setOverlayMode] = useState<OverlayModeType>("none");
-  const [viewRollout, setViewRollout] = useState<AppRollout | null>(null);
 
   // Store the diff text when opening the diff overlay so the view isn’t
   // recomputed on every re‑render while it is open.
@@ -249,6 +456,10 @@ export default function TerminalChat({
   // Keep a single AgentLoop instance alive across renders;
   // recreate only when model/instructions/approvalPolicy change.
   const agentRef = React.useRef<AgentLoop>();
+  const sessionIdRef = useRef<string>(
+    resume?.session.id ?? crypto.randomUUID(),
+  );
+  const sessionFilePathRef = useRef<string | undefined>(resume?.path);
   const [, forceUpdate] = React.useReducer((c) => c + 1, 0); // trigger re‑render
 
   // ────────────────────────────────────────────────────────────────
@@ -277,21 +488,28 @@ export default function TerminalChat({
     // Tear down any existing loop before creating a new one.
     agentRef.current?.terminate();
 
-    const sessionId = crypto.randomUUID();
     agentRef.current = new AgentLoop({
       model,
       provider,
       config,
       instructions: config.instructions,
       approvalPolicy,
+      sessionId: sessionIdRef.current,
       disableResponseStorage: config.disableResponseStorage,
       additionalWritableRoots,
-      onLastResponseId: setLastResponseId,
+      onLastResponseId: updateLastResponseId,
       onItem: (item) => {
         log(`onItem: ${JSON.stringify(item)}`);
         setItems((prev) => {
           const updated = uniqueById([...prev, item]);
-          saveRollout(sessionId, updated);
+          const savedPath = saveRollout(sessionIdRef.current, updated, {
+            instructions: config.instructions,
+            model,
+            provider,
+            lastResponseId: lastResponseIdRef.current,
+            filePath: sessionFilePathRef.current,
+          });
+          sessionFilePathRef.current = savedPath;
           return updated;
         });
       },
@@ -299,13 +517,18 @@ export default function TerminalChat({
       getCommandConfirmation: async (
         command: Array<string>,
         applyPatch: ApplyPatchCommand | undefined,
+        context?: CommandApprovalContext,
       ): Promise<CommandConfirmation> => {
         log(`getCommandConfirmation: ${command}`);
         const commandForDisplay = formatCommandForDisplay(command);
+        const approvalMetadata = context;
 
         // First request for confirmation
         let { decision: review, customDenyMessage } = await requestConfirmation(
-          <TerminalChatToolCallCommand commandForDisplay={commandForDisplay} />,
+          <TerminalChatToolCallCommand
+            commandForDisplay={commandForDisplay}
+            context={approvalMetadata}
+          />,
         );
 
         // If the user wants an explanation, generate one and ask again.
@@ -324,6 +547,7 @@ export default function TerminalChat({
             <TerminalChatToolCallCommand
               commandForDisplay={commandForDisplay}
               explanation={explanation}
+              context={approvalMetadata}
             />,
           );
 
@@ -379,6 +603,34 @@ export default function TerminalChat({
       }
     };
   }, [loading, confirmationPrompt]);
+
+  useEffect(() => {
+    if (
+      !agentRef.current ||
+      loading ||
+      confirmationPrompt != null ||
+      queuedPrompts.length === 0 ||
+      launchingQueuedRunRef.current
+    ) {
+      return;
+    }
+    const next = queuedPrompts[0];
+    if (!next) {
+      return;
+    }
+    launchingQueuedRunRef.current = true;
+    setQueuedPrompts((prev) => prev.slice(1));
+    agentRef.current.run(
+      cloneInputItems(next.items),
+      lastResponseIdRef.current ?? "",
+    );
+  }, [queuedPrompts, loading, confirmationPrompt]);
+
+  useEffect(() => {
+    if (!loading) {
+      launchingQueuedRunRef.current = false;
+    }
+  }, [loading]);
 
   // Notify desktop with a preview when an assistant response arrives.
   const prevLoadingRef = useRef<boolean>(false);
@@ -501,21 +753,12 @@ export default function TerminalChat({
     [items, model],
   );
 
-  if (viewRollout) {
-    return (
-      <TerminalChatPastRollout
-        fileOpener={config.fileOpener}
-        session={viewRollout.session}
-        items={viewRollout.items}
-      />
-    );
-  }
-
   return (
     <Box flexDirection="column">
       <Box flexDirection="column">
         {agent ? (
           <TerminalMessageHistory
+            key={historyKey}
             setOverlayMode={setOverlayMode}
             batch={lastMessageBatch}
             groupCounts={groupCounts}
@@ -549,7 +792,7 @@ export default function TerminalChat({
             loading={loading}
             setItems={setItems}
             isNew={Boolean(items.length === 0)}
-            setLastResponseId={setLastResponseId}
+            setLastResponseId={(value) => updateLastResponseId(value)}
             confirmationPrompt={confirmationPrompt}
             explanation={explanation}
             submitConfirmation={(
@@ -562,11 +805,9 @@ export default function TerminalChat({
               })
             }
             contextLeftPercent={contextLeftPercent}
-            openOverlay={() => setOverlayMode("history")}
             openModelOverlay={() => setOverlayMode("model")}
             openApprovalOverlay={() => setOverlayMode("approval")}
             openHelpOverlay={() => setOverlayMode("help")}
-            openSessionsOverlay={() => setOverlayMode("sessions")}
             openDiffOverlay={() => {
               const { isGitRepo, diff } = getGitDiff();
               let text: string;
@@ -688,6 +929,11 @@ export default function TerminalChat({
 
                 const backend = await fetchBackendRateLimits();
                 if (backend.snapshot) {
+                  if (backend.fromCache) {
+                    lines.push(
+                      "Rate limits (cached from most recent agent response):",
+                    );
+                  }
                   const { primary, secondary } = backend.snapshot;
                   const formatWindow = (
                     label: string,
@@ -759,6 +1005,9 @@ export default function TerminalChat({
               })();
             }}
             onTestPlan={isTestEnv ? emitTestPlan : undefined}
+            onTestApproval={isTestEnv ? runApprovalTest : undefined}
+            onRunLocalCommand={runLocalCommand}
+            onClearConversation={clearConversation}
             active={overlayMode === "none"}
             interruptAgent={() => {
               if (!agent) {
@@ -785,36 +1034,36 @@ export default function TerminalChat({
                   ],
                 },
               ]);
+              if (queuedPrompts.length > 0) {
+                const combined = queuedPrompts
+                  .map((entry) => entry.preview)
+                  .filter((text) => text.length > 0)
+                  .join("\n");
+                setQueuedPrompts([]);
+                if (combined) {
+                  setRestoreQueuedText((prev) =>
+                    prev && prev.length > 0 ? `${combined}\n${prev}` : combined,
+                  );
+                }
+              }
             }}
             submitInput={(inputs) => {
-              agent.run(inputs, lastResponseId || "");
-              return {};
+              handleSubmitInput(inputs);
             }}
             items={items}
             thinkingSeconds={thinkingSeconds}
+            queuedPrompts={queuedPromptSummaries}
+            onRecallQueuedPrompt={recallQueuedPrompt}
+            restoreText={restoreQueuedText}
+            onConsumeRestoreText={() => setRestoreQueuedText(null)}
           />
         )}
-        {overlayMode === "history" && (
-          <HistoryOverlay items={items} onExit={() => setOverlayMode("none")} />
-        )}
-        {overlayMode === "sessions" && (
-          <SessionsOverlay
-            onView={async (p) => {
-              try {
-                const txt = await fs.readFile(p, "utf-8");
-                const data = JSON.parse(txt) as AppRollout;
-                setViewRollout(data);
-                setOverlayMode("none");
-              } catch {
-                setOverlayMode("none");
-              }
-            }}
-            onResume={(p) => {
-              setOverlayMode("none");
-              setInitialPrompt(`Resume this session: ${p}`);
-            }}
-            onExit={() => setOverlayMode("none")}
-          />
+        {isTestEnv && (
+          <Box marginTop={1}>
+            <Text color="gray" dimColor>
+              [vitest-loading-{loading ? "1" : "0"}]
+            </Text>
+          </Box>
         )}
         {overlayMode === "model" && (
           <ModelOverlay
@@ -847,9 +1096,9 @@ export default function TerminalChat({
               }
 
               setModel(newModel);
-              setLastResponseId((prev) =>
-                prev && newModel !== model ? null : prev,
-              );
+              if (lastResponseIdRef.current && newModel !== model) {
+                updateLastResponseId(null);
+              }
 
               // Save model to config
               saveConfig({
@@ -898,9 +1147,9 @@ export default function TerminalChat({
 
               setProvider(newProvider);
               setModel(defaultModel);
-              setLastResponseId((prev) =>
-                prev && newProvider !== provider ? null : prev,
-              );
+              if (lastResponseIdRef.current && newProvider !== provider) {
+                updateLastResponseId(null);
+              }
 
               setItems((prev) => [
                 ...prev,
@@ -975,4 +1224,31 @@ export default function TerminalChat({
       </Box>
     </Box>
   );
+}
+
+function extractPromptPreview(
+  items: Array<ResponseInputItem>,
+): string {
+  for (const item of items) {
+    if (item.type === "message" && (item as { role?: string }).role === "user") {
+      const parts = (item as ResponseInputItem.Message).content ?? [];
+      for (const part of parts) {
+        if ((part as { type?: string }).type === "input_text") {
+          const candidate = (part as { text?: string }).text?.trim();
+          if (candidate) {
+            return candidate;
+          }
+        }
+      }
+    }
+  }
+  return "(queued prompt)";
+}
+
+function cloneInputItems(
+  items: Array<ResponseInputItem>,
+): Array<ResponseInputItem> {
+  return items.map((item) =>
+    JSON.parse(JSON.stringify(item)),
+  ) as Array<ResponseInputItem>;
 }

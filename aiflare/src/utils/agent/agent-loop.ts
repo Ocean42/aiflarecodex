@@ -1,7 +1,7 @@
 import type { ReviewDecision } from "./review.js";
 import type { ApplyPatchCommand, ApprovalPolicy } from "../../approvals.js";
 import type { AppConfig } from "../config.js";
-import type { ResponseEvent as WireResponseEvent } from "../responses.js";
+import type { WireResponseEvent } from "../wire-response-events.js";
 import type {
   ResponseFunctionToolCall,
   ResponseInputItem,
@@ -11,7 +11,7 @@ import type {
   Tool,
 } from "openai/resources/responses/responses.mjs";
 import type { Reasoning } from "openai/resources.mjs";
-import type { ExecStreamChunk } from "./sandbox/interface.js";
+import type { ExecInput, ExecStreamChunk } from "./sandbox/interface.js";
 import type {
   AgentResponseItem,
   ReasoningContentDeltaEvent,
@@ -19,6 +19,7 @@ import type {
   ReasoningSummaryDeltaEvent,
 } from "./agent-events.js";
 import type { ExecLifecycleEvent } from "./handle-exec-command.js";
+import type { ToolInvocation } from "./tool-router.js";
 
 import { CLI_VERSION } from "../../version.js";
 import {
@@ -32,7 +33,6 @@ import { log } from "../logger/log.js";
 import { logHttpDebug } from "../logger/httpDebug.js";
 import { InstructionsManager } from "../instructionsManager.js";
 import { parseToolCallArguments } from "../parsers.js";
-import { responsesCreateViaChatCompletions } from "../responses.js";
 import {
   ORIGIN,
   getSessionId,
@@ -49,17 +49,33 @@ import {
 } from "./plan-utils.js";
 import type { PlanUpdatePayload } from "./plan-utils.js";
 import { notifyTurnComplete } from "../turn-notifier.js";
+import { ToolRouter, type ToolHandler } from "./tool-router.js";
+import { ToolRuntime } from "./tool-runtime.js";
+import {
+  McpConnectionManager,
+  type ListResourcesPayload,
+  type ListResourceTemplatesPayload,
+  type ReadResourcePayload,
+  type McpToolDescriptor,
+} from "../mcp/connection-manager.js";
 import { runApplyPatchTool } from "./apply-patch-tool.js";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
 import OpenAI, { APIConnectionTimeoutError, AzureOpenAI } from "openai";
+import { parse } from "shell-quote";
+import type { ParseEntry } from "shell-quote";
 import os from "os";
+import { fileTypeFromBuffer } from "file-type";
+import { resolveWorkspaceFile } from "../resolve-workspace-file.js";
 import {
   mapWireEventToCore,
   type CoreResponseEvent,
   type TokenUsage,
 } from "../../backend/responseEvents.js";
+import { fetchBackendRateLimits } from "../../backend/status.js";
 import { createResponsesRequest } from "../../backend/modelClient.js";
 import {
   promptToResponsesTurn,
@@ -67,12 +83,41 @@ import {
 } from "../../backend/prompt.js";
 import { BackendCredentials } from "../../backend/backend-credentials.js";
 import { httpManager } from "../http-manager.js";
+import { runReadFileTool, runListDirTool, runGrepFilesTool } from "./fs-tools.js";
+import { getDefaultModelProviderInfo } from "../../backend/modelProvider.js";
 
 // Wait time before retrying after rate limit errors (ms).
 const RATE_LIMIT_RETRY_WAIT_MS = parseInt(
   process.env["OPENAI_RATE_LIMIT_RETRY_WAIT_MS"] || "500",
   10,
 );
+const DEFAULT_REQUEST_MAX_RETRIES = 4;
+const DEFAULT_STREAM_MAX_RETRIES = 5;
+
+function resolveProviderRetryConfig(provider: string | undefined): {
+  requestMaxRetries: number;
+  streamMaxRetries: number;
+} {
+  const normalized = (provider ?? "openai").toLowerCase();
+  const info = getDefaultModelProviderInfo(normalized) ?? undefined;
+  return {
+    requestMaxRetries:
+      info?.requestMaxRetries ?? DEFAULT_REQUEST_MAX_RETRIES,
+    streamMaxRetries:
+      info?.streamMaxRetries ?? DEFAULT_STREAM_MAX_RETRIES,
+  };
+}
+
+function supportsParallelToolCalls(model: string): boolean {
+  const normalized = model?.toLowerCase() ?? "";
+  if (!normalized) {
+    return false;
+  }
+  return (
+    normalized.startsWith("test-gpt-5") ||
+    normalized.startsWith("codex-exp-")
+  );
+}
 
 // See https://github.com/openai/openai-node/tree/v4?tab=readme-ov-file#configuring-an-https-agent-eg-for-proxies
 const PROXY_URL = process.env["HTTPS_PROXY"];
@@ -81,15 +126,21 @@ const DEFAULT_INCLUDE_FIELDS: ResponseCreateParams["include"] = [
   "reasoning.encrypted_content",
 ];
 
+export type CommandApprovalContext = {
+  callId?: string;
+  workingDirectory?: string;
+  approvalPolicy: ApprovalPolicy;
+  sandbox?: "sandbox" | "host";
+  reason?: string;
+  retryingWithoutSandbox?: boolean;
+};
+
 export type CommandConfirmation = {
   review: ReviewDecision;
   applyPatch?: ApplyPatchCommand | undefined;
   customDenyMessage?: string;
   explanation?: string;
 };
-
-const alreadyProcessedResponses = new Set();
-const alreadyStagedItemIds = new Set<string>();
 
 type AgentLoopParams = {
   model: string;
@@ -99,6 +150,8 @@ type AgentLoopParams = {
   approvalPolicy: ApprovalPolicy;
   /** Optional label used only for logging/debugging to distinguish contexts. */
   label?: string;
+  /** Optional external session id for resume scenarios. */
+  sessionId?: string;
   /**
    * Whether the model responses should be stored on the server side (allows
    * using `previous_response_id` to provide conversational context). Defaults
@@ -117,10 +170,21 @@ type AgentLoopParams = {
   getCommandConfirmation: (
     command: Array<string>,
     applyPatch: ApplyPatchCommand | undefined,
+    context?: CommandApprovalContext,
   ) => Promise<CommandConfirmation>;
   onLastResponseId: (lastResponseId: string) => void;
   onCommandApproval?: (event: CommandApprovalEvent) => void;
 };
+
+type StageItemOptions = {
+  /** Mark the item as completed so fallback buffers don't re-emit it. */
+  markDelivered?: boolean;
+};
+
+type StageItemFn = (
+  item: ResponseItem,
+  options?: StageItemOptions,
+) => void;
 
 const shellFunctionTool: FunctionTool = {
   type: "function",
@@ -303,6 +367,137 @@ const viewImageTool: FunctionTool = {
   },
 };
 
+const readFileTool: FunctionTool = {
+  type: "function",
+  name: "read_file",
+  description:
+    "Reads a local file with 1-indexed line numbers, supporting slice and indentation-aware block modes.",
+  strict: false,
+  parameters: {
+    type: "object",
+    properties: {
+      file_path: {
+        type: "string",
+        description: "Absolute path to the file",
+      },
+      offset: {
+        type: "number",
+        description:
+          "The line number to start reading from. Must be 1 or greater.",
+      },
+      limit: {
+        type: "number",
+        description: "The maximum number of lines to return.",
+      },
+      mode: {
+        type: "string",
+        description:
+          'Optional mode selector: "slice" for simple ranges (default) or "indentation" to expand around an anchor line.',
+      },
+      indentation: {
+        type: "object",
+        properties: {
+          anchor_line: {
+            type: "number",
+            description:
+              "Anchor line to center the indentation lookup on (defaults to offset).",
+          },
+          max_levels: {
+            type: "number",
+            description:
+              "How many parent indentation levels (smaller indents) to include.",
+          },
+          include_siblings: {
+            type: "boolean",
+            description:
+              "When true, include additional blocks that share the anchor indentation.",
+          },
+          include_header: {
+            type: "boolean",
+            description:
+              "Include doc comments or attributes directly above the selected block.",
+          },
+          max_lines: {
+            type: "number",
+            description:
+              "Hard cap on the number of lines returned when using indentation mode.",
+          },
+        },
+        additionalProperties: false,
+      },
+    },
+    required: ["file_path"],
+    additionalProperties: false,
+  },
+};
+
+const listDirTool: FunctionTool = {
+  type: "function",
+  name: "list_dir",
+  description:
+    "Lists entries in a local directory with 1-indexed entry numbers and simple type labels.",
+  strict: false,
+  parameters: {
+    type: "object",
+    properties: {
+      dir_path: {
+        type: "string",
+        description: "Absolute path to the directory to list.",
+      },
+      offset: {
+        type: "number",
+        description:
+          "The entry number to start listing from. Must be 1 or greater.",
+      },
+      limit: {
+        type: "number",
+        description: "The maximum number of entries to return.",
+      },
+      depth: {
+        type: "number",
+        description:
+          "The maximum directory depth to traverse. Must be 1 or greater.",
+      },
+    },
+    required: ["dir_path"],
+    additionalProperties: false,
+  },
+};
+
+const grepFilesTool: FunctionTool = {
+  type: "function",
+  name: "grep_files",
+  description:
+    "Finds files whose contents match a pattern and lists them by modification time.",
+  strict: false,
+  parameters: {
+    type: "object",
+    properties: {
+      pattern: {
+        type: "string",
+        description: "Regular expression pattern to search for.",
+      },
+      include: {
+        type: "string",
+        description:
+          'Optional glob that limits which files are searched (e.g. "*.rs" or "*.{ts,tsx}").',
+      },
+      path: {
+        type: "string",
+        description:
+          "Directory or file path to search. Defaults to the current working directory.",
+      },
+      limit: {
+        type: "number",
+        description:
+          "Maximum number of file paths to return. Defaults to 100 (max 2000).",
+      },
+    },
+    required: ["pattern"],
+    additionalProperties: false,
+  },
+};
+
 const builtInFunctionTools: Array<Tool> = [
   shellFunctionTool,
   listMcpResourcesTool,
@@ -311,14 +506,18 @@ const builtInFunctionTools: Array<Tool> = [
   updatePlanTool,
   applyPatchFunctionTool,
   viewImageTool,
+  readFileTool,
+  listDirTool,
+  grepFilesTool,
 ];
 
 const stubbedToolNames = new Set([
   "list_mcp_resources",
   "list_mcp_resource_templates",
   "read_mcp_resource",
-  "view_image",
 ]);
+
+const STREAM_EVENT_TYPES_WE_DROP = new Set<string>();
 
 export class AgentLoop {
   private model: string;
@@ -334,6 +533,7 @@ export class AgentLoop {
   private additionalWritableRoots: ReadonlyArray<string>;
   /** Whether we ask the API to persist conversation state on the server */
   private readonly disableResponseStorage: boolean;
+  private readonly hasMcpServers: boolean;
 
   // Using `InstanceType<typeof OpenAI>` sidesteps typing issues with the OpenAI package under
   // the TS 5+ `moduleResolution=bundler` setup. OpenAI client instance. We keep the concrete
@@ -349,6 +549,7 @@ export class AgentLoop {
     applyPatch: ApplyPatchCommand | undefined,
   ) => Promise<CommandConfirmation>;
   private onLastResponseId: (lastResponseId: string) => void;
+  private pendingToolOutputs: Array<ResponseInputItem> = [];
 
   /**
    * A reference to the currently active stream returned from the OpenAI
@@ -370,6 +571,24 @@ export class AgentLoop {
   private execChunkSeq = 0;
   private reasoningSummaryBuffer = new Map<number, string>();
   private reasoningContentBuffer = new Map<number, string>();
+  private reportedDroppedStreamEventTypes = new Set<string>();
+  private unresolvedFunctionCalls = new Map<
+    string,
+    { type: string; name?: string }
+  >();
+  private outputItemMetadata = new Map<
+    string,
+    {
+      role?: string;
+      metadata?: Record<string, unknown>;
+      type?: string;
+      callId?: string;
+      functionName?: string;
+    }
+  >();
+  private outputTextStreamBuffers = new Map<string, string>();
+  private functionCallArgBuffers = new Map<string, string>();
+  private dispatchedFunctionCalls = new Set<string>();
 
   /**
    * Local conversation transcript used when `disableResponseStorage === true`. Holds
@@ -389,6 +608,15 @@ export class AgentLoop {
   /** Master abort controller – fires when terminate() is invoked. */
   private readonly hardAbort = new AbortController();
   private onCommandApproval?: (event: CommandApprovalEvent) => void;
+  private mcpManager: McpConnectionManager | null = null;
+  private mcpInitPromise: Promise<void> | null = null;
+  private mcpFunctionTools: Array<Tool> = [];
+  private mcpToolsRegistered = false;
+  private readonly toolRouter: ToolRouter;
+  private readonly toolRuntime: ToolRuntime;
+  private readonly requestMaxRetries: number;
+  private readonly streamMaxRetries: number;
+  private readonly supportsParallelToolCalls: boolean;
 
   private safeEmit(item: AgentResponseItem): void {
     this.onItem(item);
@@ -572,6 +800,761 @@ export class AgentLoop {
     return text.replace(/\s+/g, " ").trim();
   }
 
+  private warnDroppedStreamEvent(eventType: string): void {
+    if (this.reportedDroppedStreamEventTypes.has(eventType)) {
+      return;
+    }
+    this.reportedDroppedStreamEventTypes.add(eventType);
+    log(
+      `⚠️  Dropped streaming event '${eventType}'. The TypeScript agent loop still relies on buffered responses.`,
+    );
+  }
+
+  private registerFunctionCall(
+    callId: string | undefined,
+    type: string,
+    name?: string,
+  ): void {
+    if (!callId) {
+      return;
+    }
+    this.unresolvedFunctionCalls.set(callId, { type, name });
+  }
+
+  private markFunctionCallResolved(callId: string | undefined): void {
+    if (!callId) {
+      return;
+    }
+    this.unresolvedFunctionCalls.delete(callId);
+  }
+
+  private emitMissingFunctionCallWarnings(): void {
+    if (this.unresolvedFunctionCalls.size === 0) {
+      return;
+    }
+    for (const [callId, info] of this.unresolvedFunctionCalls) {
+      const text = `⚠️  OpenAI emitted a ${info.type} (${info.name ?? "<unknown>"}) with call_id=${callId}, but no matching tool output was generated.`;
+      log(text);
+      this.safeEmit({
+        id: `missing-tool-output-${callId}`,
+        type: "message",
+        role: "system",
+        content: [
+          {
+            type: "input_text",
+            text,
+          },
+        ],
+      });
+    }
+    this.unresolvedFunctionCalls.clear();
+  }
+
+  private emitStreamRetryNotice(attempt: number, max: number): void {
+    this.safeEmit({
+      id: `stream-retry-${attempt}-${Date.now()}`,
+      type: "message",
+      role: "system",
+      content: [
+        {
+          type: "input_text",
+          text: `Reconnecting... ${attempt}/${max}`,
+        },
+      ],
+    });
+  }
+
+  private isRetryableStreamError(err: unknown): boolean {
+    if (!err || typeof err !== "object") {
+      return false;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ex: any = err;
+    if (err instanceof APIConnectionTimeoutError) {
+      return true;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ApiConnErrCtor = (OpenAI as any).APIConnectionError as
+      | (new (...args: Array<unknown>) => Error)
+      | undefined;
+    if (ApiConnErrCtor && err instanceof ApiConnErrCtor) {
+      return true;
+    }
+    if (typeof ex.status === "number" && ex.status >= 500) {
+      return true;
+    }
+    if (
+      typeof ex.type === "string" &&
+      ex.type.toLowerCase() === "server_error"
+    ) {
+      return true;
+    }
+    if (
+      typeof ex.code === "string" &&
+      ex.code.toLowerCase().includes("stream")
+    ) {
+      return true;
+    }
+    if (
+      err instanceof Error &&
+      /(ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|stream closed|fetch failed)/i.test(
+        err.message,
+      )
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  private trackOutputItemMetadata(item: unknown): void {
+    const id = (item as { id?: string }).id;
+    if (!id) {
+      return;
+    }
+    const type = (item as { type?: string }).type;
+    const role = (item as { role?: string }).role;
+    const metadata =
+      (item as { metadata?: Record<string, unknown> }).metadata ?? undefined;
+    const callId = (item as { call_id?: string }).call_id;
+    const functionName = (item as { name?: string }).name;
+    this.outputItemMetadata.set(id, { role, metadata, type, callId, functionName });
+  }
+
+  private handleOutputTextDeltaEvent(
+    event: { item_id: string; delta: string },
+    stageItem: StageItemFn,
+  ): void {
+    const prev = this.outputTextStreamBuffers.get(event.item_id) ?? "";
+    const next = prev + event.delta;
+    this.outputTextStreamBuffers.set(event.item_id, next);
+    this.stageStreamedText(event.item_id, next, stageItem);
+  }
+
+  private handleOutputTextDoneEvent(
+    event: { item_id: string; text: string },
+    stageItem: StageItemFn,
+  ): void {
+    this.outputTextStreamBuffers.set(event.item_id, event.text);
+    this.stageStreamedText(event.item_id, event.text, stageItem, {
+      markDelivered: true,
+    });
+    this.outputTextStreamBuffers.delete(event.item_id);
+  }
+
+  private appendFunctionCallArguments(event: {
+    item_id: string;
+    delta: string;
+  }): void {
+    const prev = this.functionCallArgBuffers.get(event.item_id) ?? "";
+    this.functionCallArgBuffers.set(event.item_id, prev + event.delta);
+  }
+
+  private async handleFunctionCallArgumentsDoneEvent(event: {
+    item_id: string;
+    arguments: string;
+  }): Promise<void> {
+    const info = this.outputItemMetadata.get(event.item_id);
+    const callId = info?.callId ?? event.item_id;
+    if (this.dispatchedFunctionCalls.has(callId)) {
+      return;
+    }
+    const name = info?.functionName ?? "<unknown>";
+    const rawArguments =
+      event.arguments ?? this.functionCallArgBuffers.get(event.item_id) ?? "{}";
+    const functionCall: ResponseFunctionToolCall = {
+      type: "function_call",
+      call_id: callId,
+      id: event.item_id,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      function: { name, arguments: rawArguments } as any,
+    } as ResponseFunctionToolCall;
+    try {
+      const outputs = await this.handleFunctionCall(functionCall);
+      if (outputs.length > 0) {
+        this.pendingToolOutputs.push(...outputs);
+      }
+      this.dispatchedFunctionCalls.add(callId);
+    } catch (toolErr) {
+      log(
+        `AgentLoop.run(): function_call handler failed for ${name} – ${toolErr}`,
+      );
+    } finally {
+      this.functionCallArgBuffers.delete(event.item_id);
+    }
+  }
+
+  private stageStreamedText(
+    itemId: string,
+    text: string,
+    stageItem: StageItemFn,
+    options?: StageItemOptions,
+  ): void {
+    if (!text) {
+      return;
+    }
+    const meta = this.outputItemMetadata.get(itemId);
+    const staged: ResponseItem = {
+      id: itemId,
+      type: "message",
+      role: (meta?.role as ResponseItem["role"]) ?? "assistant",
+      content: [
+        {
+          type: "output_text",
+          text,
+        },
+      ],
+      ...(meta?.metadata ? { metadata: meta.metadata } : {}),
+    } as ResponseItem;
+    stageItem(staged, options);
+  }
+
+  private registerBuiltInToolHandlers(): void {
+    const execHandler = this.createExecHandler();
+    this.toolRouter.register("shell", execHandler);
+    this.toolRouter.register("container.exec", execHandler);
+    this.toolRouter.register("local_shell_call", execHandler);
+    this.toolRouter.register("apply_patch", this.createApplyPatchHandler());
+    this.toolRouter.register("update_plan", this.createUpdatePlanHandler());
+    this.toolRouter.register("view_image", this.createViewImageHandler());
+    this.toolRouter.register("read_file", this.createReadFileHandler());
+    this.toolRouter.register("list_dir", this.createListDirHandler());
+    this.toolRouter.register("grep_files", this.createGrepFilesHandler());
+    if (this.hasMcpServers) {
+      this.toolRouter.register(
+        "list_mcp_resources",
+        this.createListMcpResourcesHandler(),
+      );
+      this.toolRouter.register(
+        "list_mcp_resource_templates",
+        this.createListMcpResourceTemplatesHandler(),
+      );
+      this.toolRouter.register(
+        "read_mcp_resource",
+        this.createReadMcpResourceHandler(),
+      );
+    } else {
+      for (const name of stubbedToolNames) {
+        this.toolRouter.register(name, this.createStubbedToolHandler(name));
+      }
+    }
+  }
+
+  private refreshRateLimitsCache(): void {
+    void (async () => {
+      try {
+        await fetchBackendRateLimits({ force: true });
+      } catch (err) {
+        log(
+          `refreshRateLimitsCache failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    })();
+  }
+
+  private createExecHandler(): ToolHandler {
+    return async (invocation) => {
+      const callId = invocation.callId ?? randomUUID();
+      const outputType =
+        invocation.type === "local_shell_call"
+          ? "local_shell_call_output"
+          : "function_call_output";
+      const outputItem =
+        outputType === "local_shell_call_output"
+          ? ({
+              type: "local_shell_call_output",
+              call_id: callId,
+              output: "no function found",
+            } as ResponseInputItem)
+          : ({
+              type: "function_call_output",
+              call_id: callId,
+              output: "no function found",
+            } as ResponseInputItem.FunctionCallOutput);
+
+      const additionalItems: Array<ResponseInputItem> = [];
+
+      const {
+        outputText,
+        metadata,
+        additionalItems: additionalItemsFromExec,
+      } = await handleExecCommand(
+        invocation.args as ExecInput,
+        this.config,
+        this.approvalPolicy,
+        this.additionalWritableRoots,
+        this.getCommandConfirmation,
+        this.execAbortController?.signal,
+        {
+          callId,
+          onChunk: (chunk) => this.emitExecChunk(callId, chunk),
+          onApproval: this.onCommandApproval
+            ? (event) => this.onCommandApproval?.(event)
+            : undefined,
+          onLifecycle: (event) => this.emitExecLifecycleEvent(event, callId),
+        },
+      );
+      outputItem.output = JSON.stringify({ output: outputText, metadata });
+
+      if (additionalItemsFromExec) {
+        additionalItems.push(...additionalItemsFromExec);
+      }
+
+      this.markFunctionCallResolved(callId);
+      return [outputItem, ...additionalItems];
+    };
+  }
+
+  private createApplyPatchHandler(): ToolHandler {
+    return async (invocation) => {
+      const callId = invocation.callId ?? randomUUID();
+      const outputItem: ResponseInputItem.FunctionCallOutput = {
+        type: "function_call_output",
+        call_id: callId,
+        output: "no function found",
+      };
+      const additionalItems: Array<ResponseInputItem> = [];
+      const patch =
+        typeof (invocation.args as Record<string, unknown>)?.patch === "string"
+          ? ((invocation.args as Record<string, unknown>).patch as string)
+          : undefined;
+      if (!patch) {
+        outputItem.output = JSON.stringify({
+          error: "apply_patch tool missing `patch` argument",
+        });
+        this.markFunctionCallResolved(callId);
+        return [outputItem];
+      }
+
+      const workdir =
+        typeof (invocation.args as Record<string, unknown>)?.workdir ===
+        "string"
+          ? ((invocation.args as Record<string, unknown>).workdir as string)
+          : undefined;
+      const result = runApplyPatchTool({ patch, workdir });
+      outputItem.output = JSON.stringify({
+        output: result.output,
+        metadata: result.metadata,
+      });
+      if (result.exitCode !== 0 && result.stderr) {
+        additionalItems.push({
+          type: "message",
+          role: "system",
+          content: [
+            {
+              type: "input_text",
+              text: `apply_patch stderr:\n${result.stderr}`,
+            },
+          ],
+        });
+      }
+
+      this.markFunctionCallResolved(callId);
+      return [outputItem, ...additionalItems];
+    };
+  }
+
+  private createUpdatePlanHandler(): ToolHandler {
+    return async (invocation) => {
+      const callId = invocation.callId ?? randomUUID();
+      const outputItem: ResponseInputItem.FunctionCallOutput = {
+        type: "function_call_output",
+        call_id: callId,
+        output: "no function found",
+      };
+      const additionalItems: Array<ResponseInputItem> = [];
+      const parsed = parsePlanUpdateArgs(invocation.args);
+      if ("error" in parsed) {
+        outputItem.output = JSON.stringify({ error: parsed.error });
+      } else {
+        outputItem.output = JSON.stringify({ status: "ok" });
+        this.emitPlanUpdateEvent(parsed);
+        additionalItems.push({
+          id: `plan-${Date.now()}`,
+          type: "message",
+          role: "assistant",
+          content: [
+            {
+              type: "output_text",
+              text: formatPlanUpdate(parsed),
+            },
+          ],
+        } as ResponseItem);
+      }
+
+      this.markFunctionCallResolved(callId);
+      return [outputItem, ...additionalItems];
+    };
+  }
+
+  private createViewImageHandler(): ToolHandler {
+    return async (invocation) => {
+      const callId = invocation.callId ?? randomUUID();
+      const outputItem: ResponseInputItem.FunctionCallOutput = {
+        type: "function_call_output",
+        call_id: callId,
+        output: "no function found",
+      };
+      const additionalItems: Array<ResponseInputItem> = [];
+
+      const requestedPath =
+        typeof (invocation.args as Record<string, unknown>)?.path === "string"
+          ? ((invocation.args as Record<string, unknown>).path as string)
+          : undefined;
+      if (!requestedPath) {
+        outputItem.output = JSON.stringify({
+          error: "view_image tool missing `path` argument",
+        });
+      } else {
+        try {
+          const absPath = await resolveWorkspaceFile(requestedPath);
+          const data = await fs.readFile(absPath);
+          const fileInfo = await fileTypeFromBuffer(data);
+          const mime =
+            fileInfo?.mime?.startsWith("image/") === true
+              ? fileInfo.mime
+              : "application/octet-stream";
+          const encoded = data.toString("base64");
+          const rel = path.relative(process.cwd(), absPath) || absPath;
+          const intro =
+            rel === absPath
+              ? `Attached image ${absPath}`
+              : `Attached image ${rel}`;
+          additionalItems.push({
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: intro,
+              },
+              {
+                type: "input_image",
+                detail: "auto",
+                image_url: `data:${mime};base64,${encoded}`,
+              },
+            ],
+          });
+          outputItem.output = JSON.stringify({
+            status: "ok",
+            path: absPath,
+            mime_type: mime,
+          });
+        } catch (err) {
+          outputItem.output = JSON.stringify({
+            error: `Failed to attach image: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        }
+      }
+
+      this.markFunctionCallResolved(callId);
+      return [outputItem, ...additionalItems];
+    };
+  }
+
+  private createReadFileHandler(): ToolHandler {
+    return async (invocation) => {
+      const callId = invocation.callId ?? randomUUID();
+      const outputItem = this.createFunctionOutput(callId);
+      try {
+        const { output, absolutePath } = await runReadFileTool(
+          invocation.args as Record<string, unknown>,
+        );
+        outputItem.output = JSON.stringify({
+          output,
+          metadata: {
+            exit_code: 0,
+            duration_seconds: 0,
+          },
+          path: absolutePath,
+        });
+      } catch (err) {
+        outputItem.output = JSON.stringify({
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      this.markFunctionCallResolved(callId);
+      return [outputItem];
+    };
+  }
+
+  private createListDirHandler(): ToolHandler {
+    return async (invocation) => {
+      const callId = invocation.callId ?? randomUUID();
+      const outputItem = this.createFunctionOutput(callId);
+      try {
+        const { output, absolutePath } = await runListDirTool(
+          invocation.args as Record<string, unknown>,
+        );
+        outputItem.output = JSON.stringify({
+          output,
+          metadata: {
+            exit_code: 0,
+            duration_seconds: 0,
+          },
+          path: absolutePath,
+        });
+      } catch (err) {
+        outputItem.output = JSON.stringify({
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      this.markFunctionCallResolved(callId);
+      return [outputItem];
+    };
+  }
+
+  private createGrepFilesHandler(): ToolHandler {
+    return async (invocation) => {
+      const callId = invocation.callId ?? randomUUID();
+      const outputItem = this.createFunctionOutput(callId);
+      try {
+        const result = await runGrepFilesTool(
+          invocation.args as Record<string, unknown>,
+        );
+        outputItem.output = JSON.stringify({
+          output: result.output,
+          metadata: {
+            exit_code: result.exitCode,
+            duration_seconds: 0,
+          },
+          path: result.searchPath,
+          success: result.success,
+        });
+      } catch (err) {
+        outputItem.output = JSON.stringify({
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      this.markFunctionCallResolved(callId);
+      return [outputItem];
+    };
+  }
+
+  private createListMcpResourcesHandler(): ToolHandler {
+    return async (invocation) => {
+      const callId = invocation.callId ?? randomUUID();
+      const outputItem = this.createFunctionOutput(callId);
+      const manager = this.mcpManager;
+      if (!manager) {
+        outputItem.output = JSON.stringify({
+          error: "No MCP servers are configured.",
+        });
+        this.markFunctionCallResolved(callId);
+        return [outputItem];
+      }
+
+      await this.waitForMcpInitialization();
+      const args =
+        (invocation.args as Record<string, unknown>) ?? ({} as Record<
+          string,
+          unknown
+        >);
+      const server = this.getOptionalString(args.server);
+      const cursor = this.getOptionalString(args.cursor);
+      try {
+        const payload = await manager.listResources({ server, cursor });
+        outputItem.output = JSON.stringify(payload);
+      } catch (err) {
+        outputItem.output = JSON.stringify({
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      this.markFunctionCallResolved(callId);
+      return [outputItem];
+    };
+  }
+
+  private createListMcpResourceTemplatesHandler(): ToolHandler {
+    return async (invocation) => {
+      const callId = invocation.callId ?? randomUUID();
+      const outputItem = this.createFunctionOutput(callId);
+      const manager = this.mcpManager;
+      if (!manager) {
+        outputItem.output = JSON.stringify({
+          error: "No MCP servers are configured.",
+        });
+        this.markFunctionCallResolved(callId);
+        return [outputItem];
+      }
+      await this.waitForMcpInitialization();
+      const args =
+        (invocation.args as Record<string, unknown>) ?? ({} as Record<
+          string,
+          unknown
+        >);
+      const server = this.getOptionalString(args.server);
+      const cursor = this.getOptionalString(args.cursor);
+      try {
+        const payload = await manager.listResourceTemplates({ server, cursor });
+        outputItem.output = JSON.stringify(payload);
+      } catch (err) {
+        outputItem.output = JSON.stringify({
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      this.markFunctionCallResolved(callId);
+      return [outputItem];
+    };
+  }
+
+  private createReadMcpResourceHandler(): ToolHandler {
+    return async (invocation) => {
+      const callId = invocation.callId ?? randomUUID();
+      const outputItem = this.createFunctionOutput(callId);
+      const manager = this.mcpManager;
+      if (!manager) {
+        outputItem.output = JSON.stringify({
+          error: "No MCP servers are configured.",
+        });
+        this.markFunctionCallResolved(callId);
+        return [outputItem];
+      }
+      await this.waitForMcpInitialization();
+      const args =
+        (invocation.args as Record<string, unknown>) ?? ({} as Record<
+          string,
+          unknown
+        >);
+      const server = this.getOptionalString(args.server);
+      const uri = this.getOptionalString(args.uri);
+      if (!server || !uri) {
+        outputItem.output = JSON.stringify({
+          error: "Both 'server' and 'uri' must be provided.",
+        });
+        this.markFunctionCallResolved(callId);
+        return [outputItem];
+      }
+      try {
+        const payload = await manager.readResource({ server, uri });
+        outputItem.output = JSON.stringify(payload);
+      } catch (err) {
+        outputItem.output = JSON.stringify({
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      this.markFunctionCallResolved(callId);
+      return [outputItem];
+    };
+  }
+
+  private createMcpToolHandler(
+    descriptor: McpToolDescriptor,
+  ): ToolHandler {
+    return async (invocation) => {
+      const callId = invocation.callId ?? randomUUID();
+      const outputItem = this.createFunctionOutput(callId);
+      const manager = this.mcpManager;
+      if (!manager) {
+        outputItem.output = JSON.stringify({
+          error: "MCP is not available.",
+        });
+        this.markFunctionCallResolved(callId);
+        return [outputItem];
+      }
+
+      await this.waitForMcpInitialization();
+      const args =
+        (invocation.args as Record<string, unknown>) ?? ({} as Record<
+          string,
+          unknown
+        >);
+      try {
+        const result = await manager.callTool(
+          descriptor.serverName,
+          descriptor.toolName,
+          args,
+        );
+        outputItem.output = JSON.stringify(result);
+      } catch (err) {
+        outputItem.output = JSON.stringify({
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      this.markFunctionCallResolved(callId);
+      return [outputItem];
+    };
+  }
+
+  private createFunctionOutput(
+    callId: string,
+  ): ResponseInputItem.FunctionCallOutput {
+    return {
+      type: "function_call_output",
+      call_id: callId,
+      output: "no function found",
+    };
+  }
+
+  private getOptionalString(value: unknown): string | undefined {
+    if (typeof value !== "string") {
+      return undefined;
+    }
+    const trimmed = value.trim();
+    return trimmed === "" ? undefined : trimmed;
+  }
+
+  private createStubbedToolHandler(name: string): ToolHandler {
+    return async (invocation) => {
+      const callId = invocation.callId ?? randomUUID();
+      const outputItem: ResponseInputItem.FunctionCallOutput = {
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify({
+          error: `Tool '${name}' is not implemented in the TypeScript CLI yet. Use the shell tool as a fallback.`,
+        }),
+      };
+      this.markFunctionCallResolved(callId);
+      return [outputItem];
+    };
+  }
+
+  private async dispatchToolCall(
+    invocation: ToolInvocation,
+  ): Promise<Array<ResponseInputItem>> {
+    try {
+      return await this.toolRuntime.dispatch(invocation, {
+        canceled: this.canceled,
+      });
+    } catch (err) {
+      const { item, callId } = this.buildToolErrorOutput(invocation, err);
+      this.markFunctionCallResolved(callId);
+      return [item];
+    }
+  }
+
+  private buildToolErrorOutput(
+    invocation: ToolInvocation,
+    err: unknown,
+  ): { item: ResponseInputItem; callId: string } {
+    const callId = invocation.callId ?? randomUUID();
+    const payload = {
+      error:
+        err instanceof Error
+          ? err.message
+          : `Tool '${invocation.name}' failed: ${String(err)}`,
+    };
+    if (invocation.type === "local_shell_call") {
+      return {
+        callId,
+        item: {
+          type: "local_shell_call_output",
+          call_id: callId,
+          output: JSON.stringify(payload),
+        } as ResponseInputItem,
+      };
+    }
+    return {
+      callId,
+      item: {
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify(payload),
+      } as ResponseInputItem,
+    };
+  }
+
   /**
    * Hard‑stop the agent loop. After calling this method the instance becomes
    * unusable: any in‑flight operations are aborted and subsequent invocations
@@ -585,6 +1568,16 @@ export class AgentLoop {
 
     this.hardAbort.abort();
 
+    if (this.mcpManager) {
+      this.mcpManager.dispose().catch((err) => {
+        log(
+          `[mcp] Failed to dispose MCP connections: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
+    }
+
     this.cancel();
   }
 
@@ -592,6 +1585,66 @@ export class AgentLoop {
 
   public getLastTokenUsage(): TokenUsage | null {
     return this.lastTokenUsage;
+  }
+
+  public async runLocalShellCommand(commandText: string): Promise<void> {
+    const cmd = this.parseCommandText(commandText);
+    if (cmd.length === 0) {
+      this.safeEmit({
+        id: `local-shell-empty-${Date.now()}`,
+        type: "message",
+        role: "system",
+        content: [
+          {
+            type: "input_text",
+            text: "Local command is empty.",
+          },
+        ],
+      });
+      return;
+    }
+
+    const invocation: ToolInvocation = {
+      type: "local_shell_call",
+      name: "local_shell_call",
+      callId: randomUUID(),
+      args: {
+        cmd,
+        workdir: process.cwd(),
+        timeoutInMillis: undefined,
+      } as ExecInput,
+    };
+
+    try {
+      const outputs = await this.dispatchToolCall(invocation);
+      for (const output of outputs) {
+        this.safeEmit(output as unknown as AgentResponseItem);
+      }
+    } catch (error) {
+      this.safeEmit({
+        id: `local-shell-error-${Date.now()}`,
+        type: "message",
+        role: "system",
+        content: [
+          {
+            type: "input_text",
+            text: `Local command failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          },
+        ],
+      });
+    }
+  }
+
+  public resetConversation(): void {
+    this.transcript = [];
+    this.pendingToolOutputs = [];
+    this.pendingAborts.clear();
+    this.functionCallArgBuffers.clear();
+    this.outputTextStreamBuffers.clear();
+    this.unresolvedFunctionCalls.clear();
+    this.lastTokenUsage = null;
   }
   /*
    * Cumulative thinking time across this AgentLoop instance (ms).
@@ -605,6 +1658,7 @@ export class AgentLoop {
     instructions,
     approvalPolicy,
     label,
+    sessionId,
     disableResponseStorage,
     // `config` used to be required.  Some unit‑tests (and potentially other
     // callers) instantiate `AgentLoop` without passing it, so we make it
@@ -641,8 +1695,21 @@ export class AgentLoop {
     this.onLastResponseId = onLastResponseId;
     this.onCommandApproval = onCommandApproval;
 
-    this.disableResponseStorage = disableResponseStorage ?? false;
-    this.sessionId = getSessionId() || randomUUID().replaceAll("-", "");
+    const requestedDisable = disableResponseStorage ?? false;
+    if (requestedDisable) {
+      log(
+        "disable_response_storage is not supported for the agent loop yet. Forcing response storage on.",
+      );
+    }
+    this.disableResponseStorage = false;
+    const normalizedSessionId =
+      sessionId && sessionId.trim().length > 0 ? sessionId.trim() : null;
+    const existingSessionId = getSessionId();
+    this.sessionId =
+      normalizedSessionId ||
+      (existingSessionId && existingSessionId.length > 0
+        ? existingSessionId
+        : randomUUID().replaceAll("-", ""));
     // Configure OpenAI client with optional timeout (ms) from environment
     const timeoutMs = OPENAI_TIMEOUT_MS;
     let apiKey = this.config.apiKey ?? process.env["OPENAI_API_KEY"] ?? "";
@@ -679,6 +1746,36 @@ export class AgentLoop {
       apiKey && apiKey.length > 10
         ? `${apiKey.slice(0, 6)}...${apiKey.slice(-4)}`
         : apiKey || "<none>";
+
+    this.hasMcpServers =
+      Object.keys(this.config.mcpServers ?? {}).length > 0;
+    if (this.hasMcpServers) {
+      this.mcpManager = new McpConnectionManager({
+        servers: this.config.mcpServers ?? {},
+      });
+      this.mcpInitPromise = this.mcpManager
+        .initialize()
+        .catch((err) => {
+          log(
+            `[mcp] Failed to initialize MCP servers: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        });
+    } else {
+      this.mcpManager = null;
+    }
+
+    this.toolRouter = new ToolRouter();
+    this.toolRuntime = new ToolRuntime({
+      router: this.toolRouter,
+      emit: (event) => this.safeEmit(event),
+    });
+    this.registerBuiltInToolHandlers();
+    const retryConfig = resolveProviderRetryConfig(this.provider);
+    this.requestMaxRetries = retryConfig.requestMaxRetries;
+    this.streamMaxRetries = retryConfig.streamMaxRetries;
+    this.supportsParallelToolCalls = supportsParallelToolCalls(this.model);
 
     const labelSuffix = this.label ? `:${this.label}` : "";
     log(
@@ -747,27 +1844,60 @@ export class AgentLoop {
     );
   }
 
+  private async waitForMcpInitialization(): Promise<void> {
+    if (!this.mcpInitPromise) {
+      return;
+    }
+    try {
+      await this.mcpInitPromise;
+    } catch (err) {
+      log(
+        `[mcp] MCP initialization failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    } finally {
+      this.mcpInitPromise = null;
+    }
+  }
+
+  private async ensureMcpToolsRegistered(): Promise<void> {
+    if (
+      !this.hasMcpServers ||
+      !this.mcpManager ||
+      this.mcpToolsRegistered
+    ) {
+      return;
+    }
+    await this.waitForMcpInitialization();
+    if (!this.mcpManager) {
+      return;
+    }
+    const descriptors = this.mcpManager.getToolDescriptors();
+    if (descriptors.length === 0) {
+      this.mcpToolsRegistered = true;
+      return;
+    }
+    for (const descriptor of descriptors) {
+      this.toolRouter.register(
+        descriptor.qualifiedName,
+        this.createMcpToolHandler(descriptor),
+      );
+    }
+    this.mcpFunctionTools = descriptors.map(
+      (descriptor) => descriptor.functionTool,
+    );
+    this.mcpToolsRegistered = true;
+  }
+
   private async handleFunctionCall(
     item: ResponseFunctionToolCall,
   ): Promise<Array<ResponseInputItem>> {
-    // If the agent has been canceled in the meantime we should not perform any
-    // additional work. Returning an empty array ensures that we neither execute
-    // the requested tool call nor enqueue any follow‑up input items. This keeps
-    // the cancellation semantics intuitive for users – once they interrupt a
-    // task no further actions related to that task should be taken.
     if (this.canceled) {
       return [];
     }
-    // ---------------------------------------------------------------------
-    // Normalise the function‑call item into a consistent shape regardless of
-    // whether it originated from the `/responses` or the `/chat/completions`
-    // endpoint – their JSON differs slightly.
-    // ---------------------------------------------------------------------
 
     const isChatStyle =
-      // The chat endpoint nests function details under a `function` key.
-      // We conservatively treat the presence of this field as a signal that
-      // we are dealing with the chat format.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (item as any).function != null;
 
@@ -783,213 +1913,102 @@ export class AgentLoop {
       : // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (item as any).arguments;
 
-    // The OpenAI "function_call" item may have either `call_id` (responses
-    // endpoint) or `id` (chat endpoint).  Prefer `call_id` if present but fall
-    // back to `id` to remain compatible.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const callId: string = (item as any).call_id ?? (item as any).id;
+    const callId: string =
+      (item as any).call_id ?? (item as any).id ?? randomUUID();
 
-    const args = parseToolCallArguments(rawArguments ?? "{}");
+    const resolvedName = name ?? "<unknown>";
+    const args = this.parseInvocationArgs(resolvedName, rawArguments ?? "{}");
     log(
-      `handleFunctionCall(): name=${
-        name ?? "undefined"
-      } callId=${callId} args=${rawArguments}`,
+      `handleFunctionCall(): name=${resolvedName} callId=${callId} args=${rawArguments}`,
     );
 
     if (args == null) {
       const outputItem: ResponseInputItem.FunctionCallOutput = {
         type: "function_call_output",
-        call_id: item.call_id,
+        call_id: callId,
         output: `invalid arguments: ${rawArguments}`,
       };
+      this.markFunctionCallResolved(callId);
       return [outputItem];
     }
 
-    const outputItem: ResponseInputItem.FunctionCallOutput = {
-      type: "function_call_output",
-      // `call_id` is mandatory – ensure we never send `undefined` which would
-      // trigger the "No tool output found…" 400 from the API.
-      call_id: callId,
-      output: "no function found",
+    const invocation: ToolInvocation = {
+      type: "function_call",
+      name: resolvedName,
+      args,
+      rawArguments,
+      callId,
     };
 
-    // We intentionally *do not* remove this `callId` from the `pendingAborts`
-    // set right away.  The output produced below is only queued up for the
-    // *next* request to the OpenAI API – it has not been delivered yet.  If
-    // the user presses ESC‑ESC (i.e. invokes `cancel()`) in the small window
-    // between queuing the result and the actual network call, we need to be
-    // able to surface a synthetic `function_call_output` marked as
-    // "aborted".  Keeping the ID in the set until the run concludes
-    // successfully lets the next `run()` differentiate between an aborted
-    // tool call (needs the synthetic output) and a completed one (cleared
-    // below in the `flush()` helper).
-
-    // used to tell model to stop if needed
-    const additionalItems: Array<ResponseInputItem> = [];
-
-    // TODO: allow arbitrary function calls (beyond shell/container.exec)
-    if (name === "container.exec" || name === "shell") {
-      const {
-        outputText,
-        metadata,
-        additionalItems: additionalItemsFromExec,
-      } = await handleExecCommand(
-        args,
-        this.config,
-        this.approvalPolicy,
-        this.additionalWritableRoots,
-        this.getCommandConfirmation,
-        this.execAbortController?.signal,
-        {
-          callId,
-          onChunk: (chunk) => this.emitExecChunk(callId, chunk),
-          onApproval: this.onCommandApproval
-            ? (event) => this.onCommandApproval?.(event)
-            : undefined,
-          onLifecycle: (event) =>
-            this.emitExecLifecycleEvent(event, callId),
-        },
-      );
-      outputItem.output = JSON.stringify({ output: outputText, metadata });
-
-      if (additionalItemsFromExec) {
-        additionalItems.push(...additionalItemsFromExec);
-      }
-    } else if (name === "apply_patch") {
-      const patch = typeof (args as Record<string, unknown>)?.patch === "string"
-        ? (args as Record<string, unknown>).patch
-        : undefined;
-      if (!patch) {
-        outputItem.output = JSON.stringify({
-          error: "apply_patch tool missing `patch` argument",
-        });
-      } else {
-        const workdir =
-          typeof (args as Record<string, unknown>)?.workdir === "string"
-            ? ((args as Record<string, unknown>).workdir as string)
-            : undefined;
-        const result = runApplyPatchTool({ patch, workdir });
-        outputItem.output = JSON.stringify({
-          output: result.output,
-          metadata: result.metadata,
-        });
-        if (result.exitCode !== 0 && result.stderr) {
-          additionalItems.push({
-            type: "message",
-            role: "system",
-            content: [
-              {
-                type: "input_text",
-                text: `apply_patch stderr:\n${result.stderr}`,
-              },
-            ],
-          });
-        }
-      }
-    } else if (name && stubbedToolNames.has(name)) {
-    } else if (name === "update_plan") {
-      const parsed = parsePlanUpdateArgs(args);
-      if ("error" in parsed) {
-        outputItem.output = JSON.stringify({ error: parsed.error });
-      } else {
-        outputItem.output = JSON.stringify({ status: "ok" });
-        this.emitPlanUpdateEvent(parsed);
-        additionalItems.push({
-          id: `plan-${Date.now()}`,
-          type: "message",
-          role: "assistant",
-          content: [
-            {
-              type: "output_text",
-              text: formatPlanUpdate(parsed),
-            },
-          ],
-        } as ResponseItem);
-      }
-    } else if (name && stubbedToolNames.has(name)) {
-      outputItem.output = JSON.stringify({
-        error: `Tool '${name}' is not implemented in the TypeScript CLI yet. Use the shell tool as a fallback.`,
-      });
-    }
-
-    return [outputItem, ...additionalItems];
+    return this.dispatchToolCall(invocation);
   }
 
   private async handleLocalShellCall(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     item: any,
   ): Promise<Array<ResponseInputItem>> {
-    // If the agent has been canceled in the meantime we should not perform any
-    // additional work. Returning an empty array ensures that we neither execute
-    // the requested tool call nor enqueue any follow‑up input items. This keeps
-    // the cancellation semantics intuitive for users – once they interrupt a
-    // task no further actions related to that task should be taken.
     if (this.canceled) {
       return [];
     }
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const callId: string = item.call_id ?? randomUUID();
-    const outputItem: any = {
-      type: "local_shell_call_output",
-      // `call_id` is mandatory – ensure we never send `undefined` which would
-      // trigger the "No tool output found…" 400 from the API.
-      call_id: callId,
-      output: "no function found",
-    };
-
-    // We intentionally *do not* remove this `callId` from the `pendingAborts`
-    // set right away.  The output produced below is only queued up for the
-    // *next* request to the OpenAI API – it has not been delivered yet.  If
-    // the user presses ESC‑ESC (i.e. invokes `cancel()`) in the small window
-    // between queuing the result and the actual network call, we need to be
-    // able to surface a synthetic `function_call_output` marked as
-    // "aborted".  Keeping the ID in the set until the run concludes
-    // successfully lets the next `run()` differentiate between an aborted
-    // tool call (needs the synthetic output) and a completed one (cleared
-    // below in the `flush()` helper).
-
-    // used to tell model to stop if needed
-    const additionalItems: Array<ResponseInputItem> = [];
 
     if (item.action.type !== "exec") {
       throw new Error("Invalid action type");
     }
 
-    const args = {
-      cmd: item.action.command,
-      workdir: item.action.working_directory,
-      timeoutInMillis: item.action.timeout_ms,
+    const invocation: ToolInvocation = {
+      type: "local_shell_call",
+      name: "local_shell_call",
+      callId: item.call_id ?? randomUUID(),
+      args: {
+        cmd: item.action.command,
+        workdir: item.action.working_directory,
+        timeoutInMillis: item.action.timeout_ms,
+      } as ExecInput,
     };
 
-    const {
-      outputText,
-      metadata,
-      additionalItems: additionalItemsFromExec,
-    } = await handleExecCommand(
-      args,
-      this.config,
-      this.approvalPolicy,
-        this.additionalWritableRoots,
-        this.getCommandConfirmation,
-        this.execAbortController?.signal,
-        {
-          callId,
-          onChunk: (chunk) => this.emitExecChunk(callId, chunk),
-          onApproval: this.onCommandApproval
-            ? (event) => this.onCommandApproval?.(event)
-            : undefined,
-          onLifecycle: (event) =>
-            this.emitExecLifecycleEvent(event, callId),
-        },
-      );
-    outputItem.output = JSON.stringify({ output: outputText, metadata });
+    return this.dispatchToolCall(invocation);
+  }
 
-    if (additionalItemsFromExec) {
-      additionalItems.push(...additionalItemsFromExec);
+  private parseInvocationArgs(
+    name: string,
+    rawArguments: string,
+  ): Record<string, unknown> | undefined {
+    const isExecTool =
+      name === "shell" || name === "container.exec" || name === "local_shell_call";
+    if (isExecTool) {
+      return parseToolCallArguments(rawArguments) ?? undefined;
     }
+    if (!rawArguments) {
+      return {};
+    }
+    try {
+      const parsed = JSON.parse(rawArguments);
+      if (typeof parsed === "object" && parsed !== null) {
+        return parsed as Record<string, unknown>;
+      }
+      return undefined;
+    } catch (err) {
+      log(
+        `Failed to parse arguments for ${name}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return undefined;
+    }
+  }
 
-    return [outputItem, ...additionalItems];
+  private parseCommandText(commandText: string): Array<string> {
+    const entries = parse(commandText) as Array<ParseEntry>;
+    const cmd: Array<string> = [];
+    for (const entry of entries) {
+      if (typeof entry === "string") {
+        cmd.push(entry);
+      } else if (entry && typeof entry === "object" && "op" in entry) {
+        cmd.push(entry.op);
+      }
+    }
+    return cmd;
   }
 
   public async run(
@@ -1005,6 +2024,9 @@ export class AgentLoop {
     // ---------------------------------------------------------------------
 
     try {
+      const isCodexBackend =
+        (this.baseUrl ?? "").includes("/backend-api/codex");
+      const statelessMode = this.disableResponseStorage || isCodexBackend;
       if (this.terminated) {
         throw new Error("AgentLoop has been terminated");
       }
@@ -1026,6 +2048,13 @@ export class AgentLoop {
       );
       this.reasoningSummaryBuffer.clear();
       this.reasoningContentBuffer.clear();
+      this.pendingToolOutputs = [];
+      this.reportedDroppedStreamEventTypes.clear();
+      this.unresolvedFunctionCalls.clear();
+      this.outputItemMetadata.clear();
+      this.outputTextStreamBuffers.clear();
+      this.functionCallArgBuffers.clear();
+      this.dispatchedFunctionCalls.clear();
       // NOTE: We no longer (re‑)attach an `abort` listener to `hardAbort` here.
       // A single listener that forwards the `abort` to the current
       // `execAbortController` is installed once in the constructor. Re‑adding a
@@ -1041,9 +2070,7 @@ export class AgentLoop {
       // forward the caller‑supplied `previousResponseId` so that the model sees the
       // full context.  When storage is disabled we *must not* send any ID because the
       // server no longer retains the referenced response.
-      let lastResponseId: string = this.disableResponseStorage
-        ? ""
-        : previousResponseId;
+      let lastResponseId: string = statelessMode ? "" : previousResponseId;
 
       // If there are unresolved function calls from a previously cancelled run
       // we have to emit dummy tool outputs so that the API no longer expects
@@ -1082,7 +2109,11 @@ export class AgentLoop {
       // `disableResponseStorage === true`.
       let transcriptPrefixLen = 0;
 
+      await this.ensureMcpToolsRegistered();
       const tools: Array<Tool> = [...builtInFunctionTools];
+      if (this.mcpFunctionTools.length > 0) {
+        tools.push(...this.mcpFunctionTools);
+      }
 
       const stripInternalFields = (
         item: ResponseInputItem,
@@ -1102,7 +2133,18 @@ export class AgentLoop {
         return clean as unknown as ResponseInputItem;
       };
 
-      if (this.disableResponseStorage) {
+      const buildTurnInput = (
+        deltaItems: Array<ResponseInputItem>,
+      ): Array<ResponseInputItem> => {
+        const sanitizedDelta = deltaItems.map(stripInternalFields);
+        if (!statelessMode) {
+          return sanitizedDelta;
+        }
+        const sanitizedTranscript = this.transcript.map(stripInternalFields);
+        return [...sanitizedTranscript, ...sanitizedDelta];
+      };
+
+      if (statelessMode) {
         // Remember where the existing transcript ends – everything after this
         // index in the upcoming `turnInput` list will be *new* for this turn
         // and therefore needs to be surfaced to the UI.
@@ -1113,32 +2155,27 @@ export class AgentLoop {
         // `turnInput` is still empty at this point (it will be filled later).
         // We need to look at the *input* items the user just supplied.
         this.transcript.push(...filterToApiMessages(input));
-
-        turnInput = [...this.transcript, ...abortOutputs].map(
-          stripInternalFields,
-        );
+        turnInput = buildTurnInput(abortOutputs);
       } else {
-        turnInput = [...abortOutputs, ...input].map(stripInternalFields);
+        turnInput = buildTurnInput([...abortOutputs, ...input]);
       }
 
       this.onLoading(true);
 
       const staged: Array<ResponseItem | undefined> = [];
-      const stageItem = (item: ResponseItem) => {
+      const deliveredFinalItemIds = new Set<string>();
+      const stageItem: StageItemFn = (item, options = {}) => {
         // Ignore any stray events that belong to older generations.
         if (thisGeneration !== this.generation) {
           return;
         }
 
-        // Skip items we've already processed to avoid staging duplicates
-        if (item.id && alreadyStagedItemIds.has(item.id)) {
-          return;
-        }
-        alreadyStagedItemIds.add(item.id);
-
         // Store the item so the final flush can still operate on a complete list.
         // We'll nil out entries once they're delivered.
         const idx = staged.push(item) - 1;
+        if (options.markDelivered && item.id) {
+          deliveredFinalItemIds.add(item.id);
+        }
 
         // Instead of emitting synchronously we schedule a short‑delay delivery.
         //
@@ -1164,7 +2201,7 @@ export class AgentLoop {
             // Handle transcript updates to maintain consistency. When we
             // operate without server‑side storage we keep our own transcript
             // so we can provide full context on subsequent calls.
-            if (this.disableResponseStorage) {
+            if (statelessMode) {
               // Exclude system messages from transcript as they do not form
               // part of the assistant/user dialogue that the model needs.
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1184,14 +2221,13 @@ export class AgentLoop {
                 //   • user messages   – we added these to the transcript when
                 //     building the first turnInput; stageItem would add a
                 //     duplicate.
+                const itemType = (item as ResponseInputItem).type;
+                const itemRole =
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  (item as any).role;
                 if (
-                  (item as ResponseInputItem).type === "function_call" ||
-                  (item as ResponseInputItem).type === "reasoning" ||
-                  //@ts-expect-error - waiting on sdk
-                  (item as ResponseInputItem).type === "local_shell_call" ||
-                  ((item as ResponseInputItem).type === "message" &&
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    (item as any).role === "user")
+                  itemType === "reasoning" ||
+                  (itemType === "message" && itemRole === "user")
                 ) {
                   return;
                 }
@@ -1230,7 +2266,7 @@ export class AgentLoop {
         // for the UI so that we don't spam the interface with repeats of the
         // entire transcript on every iteration when response storage is
         // disabled.
-        const deltaInput = this.disableResponseStorage
+        const deltaInput = statelessMode
           ? turnInput.slice(transcriptPrefixLen)
           : [...turnInput];
         for (const item of deltaInput) {
@@ -1239,9 +2275,9 @@ export class AgentLoop {
         // Send request to OpenAI with retry on timeout.
         let stream;
 
-        // Retry loop for transient errors. Up to MAX_RETRIES attempts.
-        const MAX_RETRIES = 8;
-        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        // Retry loop for transient errors. Budget is provider-specific.
+        const maxRequestRetries = this.requestMaxRetries;
+        for (let attempt = 1; attempt <= maxRequestRetries; attempt++) {
           try {
             let reasoning: Reasoning | undefined;
             if (isOModel || isCodexModel) {
@@ -1254,17 +2290,8 @@ export class AgentLoop {
                 reasoning.summary = "auto";
               }
             }
-            const responseCall =
-              !this.config.provider ||
-              this.config.provider?.toLowerCase() === "openai" ||
-              this.config.provider?.toLowerCase() === "azure"
-                ? (params: ResponseCreateParams) =>
-                    this.oai.responses.create(params)
-                : (params: ResponseCreateParams) =>
-                    responsesCreateViaChatCompletions(
-                      this.oai,
-                      params as ResponseCreateParams & { stream: true },
-                    );
+            const responseCall = (params: ResponseCreateParams) =>
+              this.oai.responses.create(params);
             const instructions = InstructionsManager.getDefaultInstructions();
             log(
               `instructions (length ${instructions.length}): ${instructions}`,
@@ -1276,14 +2303,14 @@ export class AgentLoop {
                   ResponseCreateParams["input"][number]
                 >,
               tools,
-              parallelToolCalls: false,
+              parallelToolCalls: this.supportsParallelToolCalls,
             };
 
             const turnConfig = promptToResponsesTurn(prompt, {
               model: this.model,
               instructions,
               previousResponseId: lastResponseId,
-              disableResponseStorage: this.disableResponseStorage,
+              disableResponseStorage: statelessMode,
               reasoning,
               flexMode: this.config.flexMode,
               config: this.config,
@@ -1437,10 +2464,10 @@ export class AgentLoop {
               errCtx?.type === "server_error";
             if (
               (isTimeout || isServerError || isConnectionError) &&
-              attempt < MAX_RETRIES
+              attempt < maxRequestRetries
             ) {
               log(
-                `OpenAI request failed (attempt ${attempt}/${MAX_RETRIES}), retrying...`,
+                `OpenAI request failed (attempt ${attempt}/${maxRequestRetries}), retrying...`,
               );
               continue;
             }
@@ -1473,7 +2500,7 @@ export class AgentLoop {
               errCtx.type === "rate_limit_exceeded" ||
               /rate limit/i.test(errCtx.message ?? "");
             if (isRateLimit) {
-              if (attempt < MAX_RETRIES) {
+              if (attempt < maxRequestRetries) {
                 // Exponential backoff: base wait * 2^(attempt-1), or use suggested retry time
                 // if provided.
                 let delayMs = RATE_LIMIT_RETRY_WAIT_MS * 2 ** (attempt - 1);
@@ -1488,7 +2515,7 @@ export class AgentLoop {
                   }
                 }
                 log(
-                  `OpenAI rate limit exceeded (attempt ${attempt}/${MAX_RETRIES}), retrying in ${Math.round(
+                  `OpenAI rate limit exceeded (attempt ${attempt}/${maxRequestRetries}), retrying in ${Math.round(
                     delayMs,
                   )} ms...`,
                 );
@@ -1630,7 +2657,73 @@ export class AgentLoop {
           return;
         }
 
-        const MAX_STREAM_RETRIES = 5;
+        const restartStreamWithSameInput =
+          async (): Promise<AsyncIterable<WireResponseEvent>> => {
+            let reasoning: Reasoning | undefined;
+            if (isOModel || isCodexModel) {
+              reasoning = { effort: this.config.reasoningEffort ?? "medium" };
+              if (
+                this.model === "o3" ||
+                this.model === "o4-mini" ||
+                isCodexModel
+              ) {
+                reasoning.summary = "auto";
+              }
+            }
+
+            const responseCall = (params: ResponseCreateParams) =>
+              this.oai.responses.create(params);
+
+            const instructions = InstructionsManager.getDefaultInstructions();
+
+            const prompt: Prompt = {
+              input:
+                turnInput as unknown as Array<
+                  ResponseCreateParams["input"][number]
+                >,
+              tools,
+              parallelToolCalls: this.supportsParallelToolCalls,
+            };
+
+            const retryTurn = promptToResponsesTurn(prompt, {
+              model: this.model,
+              instructions,
+              previousResponseId: lastResponseId,
+              disableResponseStorage: statelessMode,
+              reasoning,
+              flexMode: this.config.flexMode,
+              config: this.config,
+              include: DEFAULT_INCLUDE_FIELDS,
+              promptCacheKey: this.sessionId,
+            });
+
+            const retryParams = createResponsesRequest(retryTurn);
+
+            const retryToolNames = (retryParams.tools ?? [])
+              .map((t) =>
+                (t as { function?: { name?: string } })?.function?.name ??
+                "<unknown>",
+              )
+              .join(",");
+            const retryLabelSuffix = this.label ? `:${this.label}` : "";
+            log(
+              `[agent${retryLabelSuffix}] retry request model=${retryParams.model} provider=${this.provider} baseUrl=${this.baseUrl ?? "<undefined>"} apiKey=${this.apiKeyMasked} org=${this.orgHeader ?? "<none>"} project=${this.projectHeader ?? "<none>"} store=${String(
+                retryParams.store,
+              )} prevId=${
+                (retryParams as { previous_response_id?: string })
+                  .previous_response_id ?? ""
+              } tools=[${retryToolNames}]`,
+            );
+
+            log(
+              "agentLoop.run(): responseCall(1): turnInput: " +
+                JSON.stringify(turnInput),
+            );
+            // eslint-disable-next-line no-await-in-loop
+            return responseCall(retryParams);
+          };
+
+        const maxStreamRetries = this.streamMaxRetries;
         let streamRetryAttempt = 0;
 
         // eslint-disable-next-line no-constant-condition
@@ -1641,6 +2734,49 @@ export class AgentLoop {
             // eslint-disable-next-line no-await-in-loop
             for await (const event of stream as AsyncIterable<WireResponseEvent>) {
               log(`AgentLoop.run(): response event ${event.type}`);
+              if (STREAM_EVENT_TYPES_WE_DROP.has(event.type)) {
+                this.warnDroppedStreamEvent(event.type);
+              }
+
+              if (event.type === "response.output_item.added") {
+                this.trackOutputItemMetadata(event.item);
+                if (
+                  (event.item as { type?: string }).type === "function_call"
+                ) {
+                  const fcId = (event.item as { call_id?: string }).call_id;
+                  if (fcId) {
+                    this.pendingAborts.add(fcId);
+                  }
+                }
+              }
+
+              if (
+                event.type === "response.content_part.added" &&
+                event.part?.type === "output_text"
+              ) {
+                this.outputTextStreamBuffers.set(event.item_id, "");
+              }
+
+              if (event.type === "response.output_text.delta") {
+                this.handleOutputTextDeltaEvent(event, stageItem);
+                continue;
+              }
+
+              if (event.type === "response.output_text.done") {
+                this.handleOutputTextDoneEvent(event, stageItem);
+                continue;
+              }
+
+              if (event.type === "response.function_call_arguments.delta") {
+                this.appendFunctionCallArguments(event);
+                continue;
+              }
+
+              if (event.type === "response.function_call_arguments.done") {
+                // eslint-disable-next-line no-await-in-loop
+                await this.handleFunctionCallArgumentsDoneEvent(event);
+                continue;
+              }
 
               const coreEvent: CoreResponseEvent | null =
                 mapWireEventToCore(event);
@@ -1667,10 +2803,13 @@ export class AgentLoop {
                 }
               }
 
-              // process and surface each item (no-op until we can depend on streaming events)
               if (event.type === "response.output_item.done") {
                 const item = event.item;
-                // 1) if it's a reasoning item, annotate it
+                const itemId = (item as { id?: string }).id;
+                if (itemId) {
+                  this.outputItemMetadata.delete(itemId);
+                  this.outputTextStreamBuffers.delete(itemId);
+                }
                 type ReasoningItem = { type?: string; duration_ms?: number };
                 const maybeReasoning = item as ReasoningItem;
                 if (maybeReasoning.type === "reasoning") {
@@ -1680,25 +2819,60 @@ export class AgentLoop {
                   item.type === "function_call" ||
                   item.type === "local_shell_call"
                 ) {
-                  // Track outstanding tool call so we can abort later if needed.
-                  // The item comes from the streaming response, therefore it has
-                  // either `id` (chat) or `call_id` (responses) – we normalise
-                  // by reading both.
                   const callId =
                     (item as { call_id?: string; id?: string }).call_id ??
                     (item as { id?: string }).id;
+                  if (
+                    item.type === "function_call" &&
+                    callId &&
+                    this.dispatchedFunctionCalls.has(callId)
+                  ) {
+                    continue;
+                  }
+                  this.registerFunctionCall(
+                    callId,
+                    item.type,
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    (item as any).name,
+                  );
                   if (callId) {
                     this.pendingAborts.add(callId);
                   }
+                  try {
+                    let outputs: Array<ResponseInputItem> = [];
+                    if (item.type === "function_call") {
+                      outputs = await this.handleFunctionCall(
+                        item as ResponseFunctionToolCall,
+                      );
+                    } else if (item.type === "local_shell_call") {
+                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                      outputs = await this.handleLocalShellCall(item as any);
+                    }
+                    if (outputs.length > 0) {
+                      this.pendingToolOutputs.push(...outputs);
+                    }
+                  } catch (toolErr) {
+                    log(
+                      `AgentLoop.run(): tool handler failed for ${item.type} – ${toolErr}`,
+                    );
+                  }
                 } else {
-                  stageItem(item as ResponseItem);
+                  if (itemId && deliveredFinalItemIds.has(itemId)) {
+                    continue;
+                  }
+                  stageItem(item as ResponseItem, { markDelivered: true });
                 }
+                continue;
               }
 
               if (event.type === "response.completed") {
                 if (thisGeneration === this.generation && !this.canceled) {
                   for (const item of event.response.output) {
-                    stageItem(item as ResponseItem);
+                    const itemId = (item as { id?: string }).id;
+                    if (itemId && deliveredFinalItemIds.has(itemId)) {
+                      continue;
+                    }
+                    stageItem(item as ResponseItem, { markDelivered: true });
                   }
                 }
                 if (
@@ -1706,11 +2880,29 @@ export class AgentLoop {
                   (event.response.status as unknown as string) ===
                     "requires_action"
                 ) {
-                  // TODO: remove this once we can depend on streaming events
-                  newTurnInput = await this.processEventsWithoutStreaming(
-                    event.response.output,
-                    stageItem,
-                  );
+                  for (const item of event.response.output) {
+                    if (
+                      (item as { type?: string }).type === "message" &&
+                      (item as { role?: string }).role === "assistant"
+                    ) {
+                      const content = (
+                        item as {
+                          content?: Array<{ type?: string; text?: string }>;
+                        }
+                      ).content;
+                      const text = content
+                        ?.filter((c) => c.type === "output_text")
+                        .map((c) => c.text ?? "")
+                        .join(" ")
+                        .trim();
+                      if (text) {
+                        console.log(`[assistant] ${text}`);
+                      }
+                    }
+                  }
+                  const pendingOutputs = [...this.pendingToolOutputs];
+                  this.pendingToolOutputs = [];
+                  newTurnInput = pendingOutputs;
 
                   // When we do not use server‑side storage we maintain our
                   // own transcript so that *future* turns still contain full
@@ -1721,7 +2913,7 @@ export class AgentLoop {
                   // by itself would create an infinite request loop because
                   // `turnInput.length` would never reach zero.
 
-                  if (this.disableResponseStorage) {
+                  if (statelessMode) {
                     // 1) Append the freshly emitted output to our local
                     //    transcript (minus non‑message items the model does
                     //    not need to see again).
@@ -1736,17 +2928,14 @@ export class AgentLoop {
                     //    does not constitute new information for the
                     //    assistant to act upon.
 
-                    const delta = filterToApiMessages(
-                      newTurnInput.map(stripInternalFields),
-                    );
-
+                    const delta = newTurnInput.map(stripInternalFields);
                     if (delta.length === 0) {
                       // No new input => end conversation.
                       newTurnInput = [];
                     } else {
                       // Re‑send full transcript *plus* the new delta so the
                       // stateless backend receives complete context.
-                      newTurnInput = [...this.transcript, ...delta];
+                      newTurnInput = buildTurnInput(delta);
                       // The prefix ends at the current transcript length –
                       // everything after this index is new for the next
                       // iteration.
@@ -1784,14 +2973,18 @@ export class AgentLoop {
 
             if (
               isRateLimitError(err) &&
-              streamRetryAttempt < MAX_STREAM_RETRIES
+              streamRetryAttempt < maxStreamRetries
             ) {
               streamRetryAttempt += 1;
 
               const waitMs =
                 RATE_LIMIT_RETRY_WAIT_MS * 2 ** (streamRetryAttempt - 1);
               log(
-                `OpenAI stream rate‑limited – retry ${streamRetryAttempt}/${MAX_STREAM_RETRIES} in ${waitMs} ms`,
+                `OpenAI stream rate‑limited – retry ${streamRetryAttempt}/${maxStreamRetries} in ${waitMs} ms`,
+              );
+              this.emitStreamRetryNotice(
+                streamRetryAttempt,
+                maxStreamRetries,
               );
 
               // Give the server a breather before retrying.
@@ -1799,81 +2992,35 @@ export class AgentLoop {
               await new Promise((res) => setTimeout(res, waitMs));
 
               // Re‑create the stream with the *same* parameters.
-              let reasoning: Reasoning | undefined;
-              if (isOModel || isCodexModel) {
-                reasoning = { effort: this.config.reasoningEffort ?? "medium" };
-                if (
-                  this.model === "o3" ||
-                  this.model === "o4-mini" ||
-                  isCodexModel
-                ) {
-                  reasoning.summary = "auto";
-                }
-              }
-
-              const responseCall =
-                !this.config.provider ||
-                this.config.provider?.toLowerCase() === "openai" ||
-                this.config.provider?.toLowerCase() === "azure"
-                  ? (params: ResponseCreateParams) =>
-                      this.oai.responses.create(params)
-                  : (params: ResponseCreateParams) =>
-                      responsesCreateViaChatCompletions(
-                        this.oai,
-                        params as ResponseCreateParams & { stream: true },
-                      );
-
-              const instructions = InstructionsManager.getDefaultInstructions();
-
-              const prompt: Prompt = {
-                input:
-                  turnInput as unknown as Array<
-                    ResponseCreateParams["input"][number]
-                  >,
-                tools,
-                parallelToolCalls: false,
-              };
-
-              const retryTurn = promptToResponsesTurn(prompt, {
-                model: this.model,
-                instructions,
-                previousResponseId: lastResponseId,
-                disableResponseStorage: this.disableResponseStorage,
-                reasoning,
-                flexMode: this.config.flexMode,
-                config: this.config,
-                include: DEFAULT_INCLUDE_FIELDS,
-                promptCacheKey: this.sessionId,
-              });
-
-              const retryParams = createResponsesRequest(retryTurn);
-
-              const retryToolNames = (retryParams.tools ?? [])
-                .map((t) =>
-                  (t as { function?: { name?: string } })?.function?.name ??
-                  "<unknown>",
-                )
-                .join(",");
-              const retryLabelSuffix = this.label ? `:${this.label}` : "";
-              log(
-                `[agent${retryLabelSuffix}] retry request model=${retryParams.model} provider=${this.provider} baseUrl=${this.baseUrl ?? "<undefined>"} apiKey=${this.apiKeyMasked} org=${this.orgHeader ?? "<none>"} project=${this.projectHeader ?? "<none>"} store=${String(
-                  retryParams.store,
-                )} prevId=${
-                  (retryParams as { previous_response_id?: string })
-                    .previous_response_id ?? ""
-                } tools=[${retryToolNames}]`,
-              );
-
-              log(
-                "agentLoop.run(): responseCall(1): turnInput: " +
-                  JSON.stringify(turnInput),
-              );
               // eslint-disable-next-line no-await-in-loop
-              stream = await responseCall(retryParams);
+              stream = await restartStreamWithSameInput();
 
               this.currentStream = stream;
               // Continue to outer while to consume new stream.
               continue;
+            }
+
+            if (this.isRetryableStreamError(err)) {
+              if (streamRetryAttempt < maxStreamRetries) {
+                streamRetryAttempt += 1;
+                const backoffMs = Math.min(
+                  RATE_LIMIT_RETRY_WAIT_MS * 2 ** (streamRetryAttempt - 1),
+                  10_000,
+                );
+                log(
+                  `OpenAI stream disconnected – retry ${streamRetryAttempt}/${maxStreamRetries} in ${backoffMs} ms`,
+                );
+                this.emitStreamRetryNotice(
+                  streamRetryAttempt,
+                  maxStreamRetries,
+                );
+                // eslint-disable-next-line no-await-in-loop
+                await new Promise((res) => setTimeout(res, backoffMs));
+                // eslint-disable-next-line no-await-in-loop
+                stream = await restartStreamWithSameInput();
+                this.currentStream = stream;
+                continue;
+              }
             }
 
             // Gracefully handle an abort triggered via `cancel()` so that the
@@ -1948,6 +3095,7 @@ export class AgentLoop {
               this.safeEmit(item);
             }
           }
+          this.emitMissingFunctionCallWarnings();
         }
 
         // At this point the turn finished without the user invoking
@@ -1955,6 +3103,8 @@ export class AgentLoop {
         // satisfied, so we can safely clear the set that tracks pending aborts
         // to avoid emitting duplicate synthetic outputs in subsequent runs.
         this.pendingAborts.clear();
+        this.functionCallArgBuffers.clear();
+        this.dispatchedFunctionCalls.clear();
         // Now emit system messages recording the per‑turn *and* cumulative
         // thinking times so UIs and tests can surface/verify them.
         // const thinkingEnd = Date.now();
@@ -1998,6 +3148,7 @@ export class AgentLoop {
           sessionId: this.sessionId,
           label: this.label,
         });
+        this.refreshRateLimitsCache();
 
         this.onLoading(false);
       };
@@ -2214,44 +3365,6 @@ export class AgentLoop {
     }
   }
 
-  // we need until we can depend on streaming events
-  private async processEventsWithoutStreaming(
-    output: Array<ResponseInputItem>,
-    emitItem: (item: ResponseItem) => void,
-  ): Promise<Array<ResponseInputItem>> {
-    // If the agent has been canceled we should short‑circuit immediately to
-    // avoid any further processing (including potentially expensive tool
-    // calls). Returning an empty array ensures the main run‑loop terminates
-    // promptly.
-    if (this.canceled) {
-      return [];
-    }
-    const turnInput: Array<ResponseInputItem> = [];
-    for (const item of output) {
-      if (item.type === "function_call") {
-        if (alreadyProcessedResponses.has(item.id)) {
-          continue;
-        }
-        alreadyProcessedResponses.add(item.id);
-        // eslint-disable-next-line no-await-in-loop
-        const result = await this.handleFunctionCall(item);
-        turnInput.push(...result);
-        //@ts-expect-error - waiting on sdk
-      } else if (item.type === "local_shell_call") {
-        //@ts-expect-error - waiting on sdk
-        if (alreadyProcessedResponses.has(item.id)) {
-          continue;
-        }
-        //@ts-expect-error - waiting on sdk
-        alreadyProcessedResponses.add(item.id);
-        // eslint-disable-next-line no-await-in-loop
-        const result = await this.handleLocalShellCall(item);
-        turnInput.push(...result);
-      }
-      emitItem(item as ResponseItem);
-    }
-    return turnInput;
-  }
 }
 
 // Dynamic developer message prefix: includes user, workdir, and rg suggestion.

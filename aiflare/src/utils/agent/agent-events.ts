@@ -45,13 +45,35 @@ export type ReasoningSectionBreakEvent = {
   summaryIndex: number;
 };
 
+export type ToolCallStartedEvent = {
+  agentEvent: true;
+  type: "tool_call_started";
+  id: string;
+  callId: string;
+  toolName: string;
+};
+
+export type ToolCallOutputEvent = {
+  agentEvent: true;
+  type: "tool_call_output";
+  id: string;
+  callId: string;
+  toolName: string;
+  status: "ok" | "error";
+  durationSeconds?: number;
+  outputCount?: number;
+  error?: string;
+};
+
 export type AgentResponseItem =
   | ResponseItem
   | PlanUpdateEvent
   | ExecEventItem
   | ReasoningSummaryDeltaEvent
   | ReasoningContentDeltaEvent
-  | ReasoningSectionBreakEvent;
+  | ReasoningSectionBreakEvent
+  | ToolCallStartedEvent
+  | ToolCallOutputEvent;
 
 export function isAgentGeneratedEvent(
   item: AgentResponseItem,
@@ -60,7 +82,9 @@ export function isAgentGeneratedEvent(
   | ExecEventItem
   | ReasoningSummaryDeltaEvent
   | ReasoningContentDeltaEvent
-  | ReasoningSectionBreakEvent {
+  | ReasoningSectionBreakEvent
+  | ToolCallStartedEvent
+  | ToolCallOutputEvent {
   return Boolean((item as { agentEvent?: boolean }).agentEvent);
 }
 

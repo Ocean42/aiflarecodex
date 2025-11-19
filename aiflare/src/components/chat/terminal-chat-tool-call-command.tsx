@@ -1,5 +1,6 @@
 import { parseApplyPatch } from "../../parse-apply-patch";
 import { shortenPath } from "../../utils/short-path";
+import type { CommandApprovalContext } from "../../utils/agent/agent-loop.js";
 import chalk from "chalk";
 import { Text } from "ink";
 import React from "react";
@@ -7,9 +8,11 @@ import React from "react";
 export function TerminalChatToolCallCommand({
   commandForDisplay,
   explanation,
+  context,
 }: {
   commandForDisplay: string;
   explanation?: string;
+  context?: CommandApprovalContext;
 }): React.ReactElement {
   // -------------------------------------------------------------------------
   // Colorize diff output inside the command preview: we detect individual
@@ -39,6 +42,39 @@ export function TerminalChatToolCallCommand({
       <Text>
         <Text dimColor>$</Text> {colorizedCommand}
       </Text>
+      {context?.reason && (
+        <>
+          <Text bold color="yellow">
+            Why
+          </Text>
+          <Text>{context.reason}</Text>
+        </>
+      )}
+      <Text>
+        <Text bold>Working dir:</Text>{" "}
+        {shortenPath(
+          context?.workingDirectory && context.workingDirectory.trim() !== ""
+            ? context.workingDirectory
+            : process.cwd(),
+        )}
+      </Text>
+      {context?.sandbox && (
+        <Text>
+          <Text bold>Sandbox:</Text>{" "}
+          {context.sandbox === "sandbox" ? "Sandbox" : "Host"}
+          {context.retryingWithoutSandbox ? " (retry outside sandbox)" : ""}
+        </Text>
+      )}
+      {context?.approvalPolicy && (
+        <Text>
+          <Text bold>Approval mode:</Text> {context.approvalPolicy}
+        </Text>
+      )}
+      {context?.callId && (
+        <Text>
+          <Text bold>Call ID:</Text> {context.callId}
+        </Text>
+      )}
       {explanation && (
         <>
           <Text bold color="yellow">

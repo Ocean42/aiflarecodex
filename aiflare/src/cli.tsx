@@ -18,16 +18,18 @@ if (major < 22) {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (process as any).noDeprecation = true;
 
-import type { AppRollout } from "./app";
+import type { AppResume, AppRollout } from "./app";
 import type { ApprovalPolicy } from "./approvals";
-import type { CommandConfirmation } from "./utils/agent/agent-loop";
+import type {
+  CommandApprovalContext,
+  CommandConfirmation,
+} from "./utils/agent/agent-loop";
 import type { AppConfig } from "./utils/config";
 import type { AgentResponseItem } from "./utils/agent/agent-events.js";
 import type { ReasoningEffort } from "openai/resources.mjs";
 
 import App from "./app";
 import { runSinglePass } from "./cli-singlepass";
-import SessionsOverlay from "./components/sessions-overlay.js";
 import { AgentLoop } from "./utils/agent/agent-loop";
 import { ReviewDecision } from "./utils/agent/review";
 import { isAgentGeneratedEvent } from "./utils/agent/agent-events.js";
@@ -60,7 +62,7 @@ import meow from "meow";
 import path from "path";
 import React from "react";
 
-import { getAuthFilePath, getCodexHomeDir } from "./utils/codexHome.js";
+import { getAuthFilePath, getCodexHomeDir, getSessionsRoot } from "./utils/codexHome.js";
 
 // Call this early so `tail -F "$TMPDIR/oai-codex/codex-cli-latest.log"` works
 // immediately. This must be run with DEBUG=1 for logging to work.
@@ -87,7 +89,7 @@ const cli = meow(
     -p, --provider <provider>       Provider to use for completions (default: openai)
     -i, --image <path>              Path(s) to image files to include as input
     -v, --view <rollout>            Inspect a previously saved rollout instead of starting a session
-    --history                       Browse previous sessions
+    --resume <session>              Resume a previously saved session (path relative to ~/.codey/sessions or absolute)
     --login                         Start a new sign in flow
     --free                          Retry redeeming free credits
     -q, --quiet                     Non-interactive mode that only prints the assistant's final output
@@ -134,7 +136,16 @@ const cli = meow(
       help: { type: "boolean", aliases: ["h"] },
       version: { type: "boolean", description: "Print version and exit" },
       view: { type: "string" },
-      history: { type: "boolean", description: "Browse previous sessions" },
+      resume: {
+        type: "string",
+        description:
+          "Resume a saved session (path relative to ~/.codey/sessions or absolute)",
+        aliases: ["r"],
+      },
+      history: {
+        type: "boolean",
+        description: "Deprecated: browsing previous sessions is no longer supported",
+      },
       login: { type: "boolean", description: "Force a new sign in flow" },
       free: { type: "boolean", description: "Retry redeeming free credits" },
       model: { type: "string", aliases: ["m"] },
@@ -322,9 +333,8 @@ let config = loadConfig(undefined, undefined, {
   isFullContext: fullContextMode,
 });
 
-// `prompt` can be updated later when the user resumes a previous session
-// via the `--history` flag. Therefore it must be declared with `let` rather
-// than `const`.
+// `prompt` may be updated later (for example when resuming a session via CLI arguments),
+// so it must be declared with `let` rather than `const`.
 let prompt = cli.input[0];
 const model = cli.flags.model ?? config.model;
 const imagePaths = cli.flags.image;
@@ -547,44 +557,60 @@ if (
 }
 
 let rollout: AppRollout | undefined;
+let resumeSession: AppResume | undefined;
 
-// For --history, show session selector and optionally update prompt or rollout.
 if (cli.flags.history) {
-  const result: { path: string; mode: "view" | "resume" } | null =
-    await new Promise((resolve) => {
-      const instance = render(
-        React.createElement(SessionsOverlay, {
-          onView: (p: string) => {
-            instance.unmount();
-            resolve({ path: p, mode: "view" });
-          },
-          onResume: (p: string) => {
-            instance.unmount();
-            resolve({ path: p, mode: "resume" });
-          },
-          onExit: () => {
-            instance.unmount();
-            resolve(null);
-          },
-        }),
-      );
-    });
+  // eslint-disable-next-line no-console
+  console.error(
+    "The --history flag has been removed. Starting a new session instead.",
+  );
+}
 
-  if (!result) {
-    process.exit(0);
+if (cli.flags.resume) {
+  const provided = String(cli.flags.resume).trim();
+  if (!provided) {
+    // eslint-disable-next-line no-console
+    console.error("--resume requires a session filename.");
+    process.exit(1);
   }
-
-  if (result.mode === "view") {
-    try {
-      const content = fs.readFileSync(result.path, "utf-8");
-      rollout = JSON.parse(content) as AppRollout;
-    } catch (error) {
+  const sessionsRoot = getSessionsRoot();
+  const candidate = path.isAbsolute(provided)
+    ? provided
+    : path.join(sessionsRoot, provided);
+  const resolved = existsSync(candidate)
+    ? candidate
+    : path.resolve(provided);
+  if (!existsSync(resolved)) {
+    // eslint-disable-next-line no-console
+    console.error(`Unable to find session file at ${candidate}`);
+    process.exit(1);
+  }
+  let content: string;
+  try {
+    content = fs.readFileSync(resolved, "utf-8");
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error(`Error reading session file ${resolved}:`, error);
+    process.exit(1);
+  }
+  try {
+    const parsed = JSON.parse(content) as AppRollout;
+    if (!parsed.session?.id) {
       // eslint-disable-next-line no-console
-      console.error("Error reading session file:", error);
+      console.error(
+        `The session file at ${resolved} is missing the session metadata required for resume.`,
+      );
       process.exit(1);
     }
-  } else {
-    prompt = `Resume this session: ${result.path}`;
+    resumeSession = {
+      path: resolved,
+      session: parsed.session,
+      items: Array.isArray(parsed.items) ? parsed.items : [],
+    };
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("Error parsing session file:", error);
+    process.exit(1);
   }
 }
 
@@ -675,6 +701,7 @@ const instance = render(
     prompt={prompt}
     config={config}
     rollout={rollout}
+    resume={resumeSession}
     imagePaths={imagePaths}
     approvalPolicy={approvalPolicy}
     additionalWritableRoots={additionalWritableRoots}
@@ -704,6 +731,12 @@ function formatResponseItemForQuietMode(item: AgentResponseItem): string {
         return `[reasoning] ${item.delta}`;
       case "reasoning_section_break":
         return "[reasoning] ---";
+      case "tool_call_started":
+        return `[tool] ${item.toolName} started (call ${item.callId})`;
+      case "tool_call_output":
+        return `[tool] ${item.toolName} ${item.status}${
+          item.durationSeconds ? ` (${item.durationSeconds}s)` : ""
+        }${item.error ? ` – ${item.error}` : ""}`;
       default:
         return JSON.stringify(item);
     }
@@ -786,6 +819,8 @@ async function runQuietMode({
     },
     getCommandConfirmation: (
       _command: Array<string>,
+      _applyPatch: ApplyPatchCommand | undefined,
+      _context?: CommandApprovalContext,
     ): Promise<CommandConfirmation> => {
       // In quiet mode, default to NO_CONTINUE, except when in full-auto mode
       const reviewDecision =
