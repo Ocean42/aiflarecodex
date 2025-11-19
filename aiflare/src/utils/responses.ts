@@ -124,6 +124,20 @@ type ResponseEvent =
       output_index: number;
       item: ResponseItemType;
     }
+  | {
+      type: "response.reasoning_summary_text.delta";
+      summary_index: number;
+      delta: string;
+    }
+  | {
+      type: "response.reasoning_text.delta";
+      content_index: number;
+      delta: string;
+    }
+  | {
+      type: "response.reasoning_summary_part.added";
+      summary_index: number;
+    }
   | { type: "response.completed"; response: ResponseOutput }
   | { type: "error"; code: string; message: string; param: string | null };
 

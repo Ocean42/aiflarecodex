@@ -1,7 +1,6 @@
-import type {
-  ResponseItem,
-  ResponseOutputItem,
-} from "openai/resources/responses/responses.mjs";
+import type { ResponseOutputItem } from "openai/resources/responses/responses.mjs";
+import type { AgentResponseItem } from "./agent/agent-events.js";
+import { isNativeResponseItem } from "./agent/agent-events.js";
 
 /**
  * Build a GitHub issues‐new URL that pre‑fills the Codex 2‑bug‑report.yml
@@ -15,7 +14,7 @@ export function buildBugReportUrl({
   platform,
 }: {
   /** Chat history so we can summarise user steps */
-  items: Array<ResponseItem | ResponseOutputItem>;
+  items: Array<AgentResponseItem | ResponseOutputItem>;
   /** CLI revision string (e.g. output of `codex --revision`) */
   cliVersion: string;
   /** Active model name */
@@ -35,6 +34,10 @@ export function buildBugReportUrl({
   const bullets: Array<string> = [];
   for (let i = 0; i < items.length; ) {
     const entry = items[i];
+    if (!isNativeResponseItem(entry as AgentResponseItem)) {
+      i += 1;
+      continue;
+    }
     if (entry?.type === "message" && entry.role === "user") {
       const contentArray = entry.content as
         | Array<{ text?: string }>

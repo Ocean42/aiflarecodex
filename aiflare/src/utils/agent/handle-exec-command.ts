@@ -83,14 +83,28 @@ export type CommandApprovalEvent = {
   callId?: string;
 };
 
+export type ExecLifecycleEvent =
+  | {
+      type: "begin";
+      command: Array<string>;
+      workdir?: string;
+    }
+  | {
+    type: "end";
+    command: Array<string>;
+    workdir?: string;
+    summary: ExecCommandSummary;
+  };
+
 export type ExecCommandHooks = {
   callId?: string;
   onChunk?: (chunk: ExecStreamChunk) => void;
   onApproval?: (event: CommandApprovalEvent) => void;
+  onLifecycle?: (event: ExecLifecycleEvent) => void;
 };
 
 export async function handleExecCommand(
-  args: ExecInput,
+  rawArgs: ExecInput,
   config: AppConfig,
   policy: ApprovalPolicy,
   additionalWritableRoots: ReadonlyArray<string>,
@@ -101,6 +115,10 @@ export async function handleExecCommand(
   abortSignal?: AbortSignal,
   hooks?: ExecCommandHooks,
 ): Promise<HandleExecCommandResult> {
+  const args =
+    rawArgs.workdir && rawArgs.workdir !== "/"
+      ? rawArgs
+      : { ...rawArgs, workdir: process.cwd() };
   const { cmd: command, workdir } = args;
 
   const key = deriveCommandKey(command);
@@ -158,15 +176,33 @@ export async function handleExecCommand(
   }
 
   const { applyPatch } = safety;
-  const summary = await execCommand(
-    args,
-    applyPatch,
-    runInSandbox,
-    additionalWritableRoots,
-    config,
-    abortSignal,
-    hooks?.onChunk,
-  );
+  const runWithLifecycle = async (
+    inSandbox: boolean,
+  ): Promise<ExecCommandSummary> => {
+    hooks?.onLifecycle?.({
+      type: "begin",
+      command,
+      workdir: args.workdir,
+    });
+    const summary = await execCommand(
+      args,
+      applyPatch,
+      inSandbox,
+      additionalWritableRoots,
+      config,
+      abortSignal,
+      hooks?.onChunk,
+    );
+    hooks?.onLifecycle?.({
+      type: "end",
+      command,
+      workdir: summary.workdir,
+      summary,
+    });
+    return summary;
+  };
+
+  const summary = await runWithLifecycle(runInSandbox);
   // If the operation was aborted in the meantime, propagate the cancellation
   // upward by returning an empty (no-op) result so that the agent loop will
   // exit cleanly without emitting spurious output.
@@ -198,15 +234,7 @@ export async function handleExecCommand(
     } else {
       // The user has approved the command, so we will run it outside of the
       // sandbox.
-      const summary = await execCommand(
-        args,
-        applyPatch,
-        false,
-        additionalWritableRoots,
-        config,
-        abortSignal,
-        hooks?.onChunk,
-      );
+      const summary = await runWithLifecycle(false);
       return convertSummaryToResult(summary);
     }
   } else {
@@ -232,6 +260,7 @@ type ExecCommandSummary = {
   stderr: string;
   exitCode: number;
   durationMs: number;
+  workdir: string;
 };
 
 async function execCommand(
@@ -244,13 +273,16 @@ async function execCommand(
   onChunk?: (chunk: ExecStreamChunk) => void,
 ): Promise<ExecCommandSummary> {
   let { workdir } = execInput;
+  let resolvedWorkdir = workdir ?? process.cwd();
   if (workdir) {
     try {
       await fs.access(workdir);
     } catch (e) {
       log(`EXEC workdir=${workdir} not found, use process.cwd() instead`);
-      workdir = process.cwd();
+      resolvedWorkdir = process.cwd();
     }
+  } else {
+    resolvedWorkdir = process.cwd();
   }
 
   if (applyPatchCommand != null) {
@@ -266,7 +298,7 @@ async function execCommand(
     log(
       `EXEC running \`${formatCommandForDisplay(
         cmd,
-      )}\` in workdir=${workdir} with timeout=${timeout}s`,
+      )}\` in workdir=${resolvedWorkdir} with timeout=${timeout}s`,
     );
   }
 
@@ -278,7 +310,12 @@ async function execCommand(
     applyPatchCommand != null
       ? execApplyPatch(applyPatchCommand.patch, workdir)
       : await exec(
-          { ...execInput, additionalWritableRoots, onChunk },
+          {
+            ...execInput,
+            workdir: resolvedWorkdir,
+            additionalWritableRoots,
+            onChunk,
+          },
           await getSandbox(runInSandbox),
           config,
           abortSignal,
@@ -297,6 +334,7 @@ async function execCommand(
     stderr,
     exitCode,
     durationMs: duration,
+    workdir: resolvedWorkdir,
   };
 }
 

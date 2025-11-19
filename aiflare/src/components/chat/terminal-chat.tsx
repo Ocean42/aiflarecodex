@@ -3,6 +3,9 @@ import type { ApplyPatchCommand, ApprovalPolicy } from "../../approvals.js";
 import type { CommandConfirmation } from "../../utils/agent/agent-loop.js";
 import type { AppConfig } from "../../utils/config.js";
 import type { ColorName } from "chalk";
+import type {
+  AgentResponseItem,
+} from "../../utils/agent/agent-events.js";
 import type { ResponseItem } from "openai/resources/responses/responses.mjs";
 
 import TerminalChatInput from "./terminal-chat-input.js";
@@ -14,6 +17,7 @@ import { useConfirmation } from "../../hooks/use-confirmation.js";
 import { useTerminalSize } from "../../hooks/use-terminal-size.js";
 import { AgentLoop } from "../../utils/agent/agent-loop.js";
 import { ReviewDecision } from "../../utils/agent/review.js";
+import { isNativeResponseItem } from "../../utils/agent/agent-events.js";
 import { generateCompactSummary } from "../../utils/compact-summary.js";
 import { saveConfig } from "../../utils/config.js";
 import { extractAppliedPatches as _extractAppliedPatches } from "../../utils/extract-applied-patches.js";
@@ -155,7 +159,7 @@ export default function TerminalChat({
   const [model, setModel] = useState<string>(config.model);
   const [provider, setProvider] = useState<string>(config.provider || "openai");
   const [lastResponseId, setLastResponseId] = useState<string | null>(null);
-  const [items, setItems] = useState<Array<ResponseItem>>([]);
+  const [items, setItems] = useState<Array<AgentResponseItem>>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>(
     initialApprovalPolicy,
@@ -286,7 +290,7 @@ export default function TerminalChat({
       onItem: (item) => {
         log(`onItem: ${JSON.stringify(item)}`);
         setItems((prev) => {
-          const updated = uniqueById([...prev, item as ResponseItem]);
+          const updated = uniqueById([...prev, item]);
           saveRollout(sessionId, updated);
           return updated;
         });
@@ -394,7 +398,10 @@ export default function TerminalChat({
       if (process.platform === "darwin") {
         // find the last assistant message
         const assistantMessages = items.filter(
-          (i) => i.type === "message" && i.role === "assistant",
+          (i): i is ResponseItem & { role: "assistant" } =>
+            isNativeResponseItem(i) &&
+            i.type === "message" &&
+            (i as { role?: string }).role === "assistant",
         );
         const last = assistantMessages[assistantMessages.length - 1];
         if (last) {
@@ -483,7 +490,10 @@ export default function TerminalChat({
   const lastMessageBatch = items.map((item) => ({ item }));
   const groupCounts: Record<string, number> = {};
   const userMsgCount = items.filter(
-    (i) => i.type === "message" && i.role === "user",
+    (i) =>
+      isNativeResponseItem(i) &&
+      i.type === "message" &&
+      (i as { role?: string }).role === "user",
   ).length;
 
   const contextLeftPercent = useMemo(

@@ -1,7 +1,7 @@
 import type { ApprovalPolicy } from "./approvals";
 import type { AppConfig } from "./utils/config";
 import type { TerminalChatSession } from "./utils/session.js";
-import type { ResponseItem } from "openai/resources/responses/responses";
+import type { AgentResponseItem } from "./utils/agent/agent-events.js";
 
 import TerminalChat from "./components/chat/terminal-chat";
 import TerminalChatPastRollout from "./components/chat/terminal-chat-past-rollout";
@@ -14,7 +14,7 @@ import React, { useMemo, useState } from "react";
 
 export type AppRollout = {
   session: TerminalChatSession;
-  items: Array<ResponseItem>;
+  items: Array<AgentResponseItem>;
 };
 
 type Props = {
@@ -60,9 +60,9 @@ export default function App({
       <Box flexDirection="column">
         <Box borderStyle="round" paddingX={1} width={64}>
           <Text>
-            ● OpenAI <Text bold>Codex</Text>{" "}
+            ● <Text bold>Averion AgentMan</Text>{" "}
             <Text dimColor>
-              (research preview) <Text color="blueBright">v{CLI_VERSION}</Text>
+              <Text color="blueBright">v{CLI_VERSION}</Text>
             </Text>
           </Text>
         </Box>

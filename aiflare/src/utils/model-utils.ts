@@ -1,9 +1,14 @@
+import type { AgentResponseItem } from "./agent/agent-events.js";
 import type { ResponseItem } from "openai/resources/responses/responses.mjs";
 
 import { approximateTokensUsed } from "./approximate-tokens-used.js";
 import { getApiKey } from "./config.js";
 import { type SupportedModelId, openAiModelInfo } from "./model-info.js";
 import { createOpenAIClient } from "./openai-client.js";
+import {
+  isAgentGeneratedEvent,
+  isNativeResponseItem,
+} from "./agent/agent-events.js";
 
 const MODEL_LIST_TIMEOUT_MS = 2_000; // 2 seconds
 export const RECOMMENDED_MODELS: Array<string> = ["o4-mini", "o3"];
@@ -111,7 +116,7 @@ export function maxTokensForModel(model: string): number {
 
 /** Calculates the percentage of tokens remaining in context for a model. */
 export function calculateContextPercentRemaining(
-  items: Array<ResponseItem>,
+  items: Array<AgentResponseItem>,
   model: string,
 ): number {
   const used = approximateTokensUsed(items);
@@ -157,21 +162,34 @@ function isUserMessage(
  *       to **adjacent** duplicates so that legitimately repeated questions at
  *       a later point in the conversation are still shown.
  */
-export function uniqueById(items: Array<ResponseItem>): Array<ResponseItem> {
-  const seenIds = new Set<string>();
-  const deduped: Array<ResponseItem> = [];
+export function uniqueById(
+  items: Array<AgentResponseItem>,
+): Array<AgentResponseItem> {
+  const idToIndex = new Map<string, number>();
+  const deduped: Array<AgentResponseItem> = [];
 
   for (const item of items) {
+    const itemId =
+      item && typeof (item as { id?: string }).id === "string"
+        ? ((item as { id?: string }).id as string)
+        : undefined;
+    if (itemId && idToIndex.has(itemId)) {
+      if (isAgentGeneratedEvent(item)) {
+        const index = idToIndex.get(itemId)!;
+        deduped[index] = item;
+      }
+      continue;
+    }
+    if (!isNativeResponseItem(item)) {
+      deduped.push(item);
+      if (itemId) {
+        idToIndex.set(itemId, deduped.length - 1);
+      }
+      continue;
+    }
     // ──────────────────────────────────────────────────────────────────
     // Rule #1 – de‑duplicate by id when present
     // ──────────────────────────────────────────────────────────────────
-    if (typeof item.id === "string" && item.id.length > 0) {
-      if (seenIds.has(item.id)) {
-        continue; // skip duplicates
-      }
-      seenIds.add(item.id);
-    }
-
     // ──────────────────────────────────────────────────────────────────
     // Rule #2 – collapse consecutive identical user messages
     // ──────────────────────────────────────────────────────────────────
@@ -179,6 +197,7 @@ export function uniqueById(items: Array<ResponseItem>): Array<ResponseItem> {
       const prev = deduped[deduped.length - 1]!;
 
       if (
+        isNativeResponseItem(prev) &&
         isUserMessage(prev) &&
         // Note: the `content` field is an array of message parts. Performing
         // a deep compare is over‑kill here; serialising to JSON is sufficient
@@ -190,6 +209,9 @@ export function uniqueById(items: Array<ResponseItem>): Array<ResponseItem> {
     }
 
     deduped.push(item);
+    if (itemId) {
+      idToIndex.set(itemId, deduped.length - 1);
+    }
   }
 
   return deduped;

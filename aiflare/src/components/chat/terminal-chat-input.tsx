@@ -6,6 +6,7 @@ import type {
   ResponseInputItem,
   ResponseItem,
 } from "openai/resources/responses/responses.mjs";
+import type { AgentResponseItem } from "../../utils/agent/agent-events.js";
 
 import MultilineTextEditor from "./multiline-editor";
 import { TerminalChatCommandReview } from "./terminal-chat-command-review.js";
@@ -24,6 +25,7 @@ import {
 import { clearTerminal, onExit } from "../../utils/terminal.js";
 import { Box, Text, useApp, useInput, useStdin } from "ink";
 import { fileURLToPath } from "node:url";
+import path from "node:path";
 import React, {
   useCallback,
   useState,
@@ -38,6 +40,7 @@ const suggestions = [
   "fix any build errors",
   "are there any bugs in my code?",
 ];
+
 
 export default function TerminalChatInput({
   isNew,
@@ -74,7 +77,7 @@ export default function TerminalChatInput({
     customDenyMessage?: string,
   ) => void;
   setLastResponseId: (lastResponseId: string) => void;
-  setItems: React.Dispatch<React.SetStateAction<Array<ResponseItem>>>;
+  setItems: React.Dispatch<React.SetStateAction<Array<AgentResponseItem>>>;
   contextLeftPercent: number;
   openOverlay: () => void;
   openModelOverlay: () => void;
@@ -90,7 +93,7 @@ export default function TerminalChatInput({
   active: boolean;
   thinkingSeconds: number;
   // New: current conversation items so we can include them in bug reports
-  items?: Array<ResponseItem>;
+  items?: Array<AgentResponseItem>;
 }): React.ReactElement {
   // Slash command suggestion index
   const [selectedSlashSuggestion, setSelectedSlashSuggestion] =
@@ -125,6 +128,22 @@ export default function TerminalChatInput({
       initialCursorOffset: newInputText.length,
     }));
   }, []);
+
+  const appendSystemMessage = useCallback(
+    (text: string) => {
+      setItems((prev) => [
+        ...prev,
+        {
+          id: `system-${Date.now()}`,
+          type: "message",
+          role: "system",
+          content: [{ type: "input_text", text }],
+        } as ResponseItem,
+      ]);
+    },
+    [setItems],
+  );
+
 
   // --- Helper for updating file system suggestions ---
   function updateFsSuggestions(

@@ -1,13 +1,18 @@
+import type { AgentResponseItem } from "./agent/agent-events.js";
 import type { ResponseItem } from "openai/resources/responses/responses.mjs";
+import { isNativeResponseItem } from "./agent/agent-events.js";
 
 /**
  * Extracts the patch texts of all `apply_patch` tool calls from the given
  * message history. Returns an empty string when none are found.
  */
-export function extractAppliedPatches(items: Array<ResponseItem>): string {
+export function extractAppliedPatches(items: Array<AgentResponseItem>): string {
   const patches: Array<string> = [];
 
   for (const item of items) {
+    if (!isNativeResponseItem(item)) {
+      continue;
+    }
     if (item.type !== "function_call") {
       continue;
     }

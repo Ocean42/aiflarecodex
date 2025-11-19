@@ -99,6 +99,34 @@ describe("TerminalChat – live integration", () => {
     cleanup();
   }, 10_000);
 
+  it("can read a repository file when asked naturally", async () => {
+    const { stdin, lastFrameStripped, flush, cleanup } = renderApp();
+    await flush();
+
+    stdin.write(
+      "Schau dir bitte die Datei README.md im aktuellen Arbeitsverzeichnis an und bestätige, dass 'OpenAI Codex CLI' darin vorkommt.",
+    );
+    stdin.write("\r");
+
+    const frame = await waitForFrame(
+      flush,
+      lastFrameStripped,
+      (out) =>
+        out.includes("Datei README.md enthält 'OpenAI Codex CLI':") ||
+        (out.includes("command.stdout") && out.includes("README.md")),
+      30,
+      200,
+    );
+
+    expect(
+      frame.includes("Datei README.md enthält 'OpenAI Codex CLI':") ||
+        frame.includes("<h1 align=\"center\">OpenAI Codex CLI</h1>") ||
+        (frame.includes("command.stdout") && frame.includes("README.md")),
+    ).toBe(true);
+
+    cleanup();
+  }, 10_000);
+
   it("shows real rate limit information in the /status overlay", async () => {
     const events: Array<HttpEvent> = [];
     const unsubscribe = httpManager.addListener((event) => events.push(event));

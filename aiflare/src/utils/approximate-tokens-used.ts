@@ -1,4 +1,5 @@
-import type { ResponseItem } from "openai/resources/responses/responses.mjs";
+import type { AgentResponseItem } from "./agent/agent-events.js";
+import { isNativeResponseItem } from "./agent/agent-events.js";
 
 /**
  * Roughly estimate the number of language‑model tokens represented by a list
@@ -13,10 +14,13 @@ import type { ResponseItem } from "openai/resources/responses/responses.mjs";
  * encounter and then converts that char count to tokens by dividing by four
  * and rounding up.
  */
-export function approximateTokensUsed(items: Array<ResponseItem>): number {
+export function approximateTokensUsed(items: Array<AgentResponseItem>): number {
   let charCount = 0;
 
   for (const item of items) {
+    if (!isNativeResponseItem(item)) {
+      continue;
+    }
     switch (item.type) {
       case "message": {
         if (item.role !== "user" && item.role !== "assistant") {

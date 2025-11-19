@@ -1,6 +1,6 @@
 import type { TerminalChatSession } from "../../utils/session.js";
-import type { ResponseItem } from "openai/resources/responses/responses";
 import type { FileOpenerScheme } from "src/utils/config.js";
+import type { AgentResponseItem } from "../../utils/agent/agent-events.js";
 
 import TerminalChatResponseItem from "./terminal-chat-response-item";
 import { Box, Text } from "ink";
@@ -12,7 +12,7 @@ export default function TerminalChatPastRollout({
   fileOpener,
 }: {
   session: TerminalChatSession;
-  items: Array<ResponseItem>;
+  items: Array<AgentResponseItem>;
   fileOpener: FileOpenerScheme | undefined;
 }): React.ReactElement {
   const { version, id: sessionId, model } = session;
@@ -20,9 +20,9 @@ export default function TerminalChatPastRollout({
     <Box flexDirection="column">
       <Box borderStyle="round" paddingX={1} width={64}>
         <Text>
-          ● OpenAI <Text bold>Codex</Text>{" "}
+          ● <Text bold>Averion AgentMan</Text>{" "}
           <Text dimColor>
-            (research preview) <Text color="blueBright">v{version}</Text>
+            <Text color="blueBright">v{version}</Text>
           </Text>
         </Text>
       </Box>

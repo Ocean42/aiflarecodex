@@ -12,6 +12,13 @@ import type {
 } from "openai/resources/responses/responses.mjs";
 import type { Reasoning } from "openai/resources.mjs";
 import type { ExecStreamChunk } from "./sandbox/interface.js";
+import type {
+  AgentResponseItem,
+  ReasoningContentDeltaEvent,
+  ReasoningSectionBreakEvent,
+  ReasoningSummaryDeltaEvent,
+} from "./agent-events.js";
+import type { ExecLifecycleEvent } from "./handle-exec-command.js";
 
 import { CLI_VERSION } from "../../version.js";
 import {
@@ -40,6 +47,7 @@ import {
   formatPlanUpdate,
   parsePlanUpdateArgs,
 } from "./plan-utils.js";
+import type { PlanUpdatePayload } from "./plan-utils.js";
 import { notifyTurnComplete } from "../turn-notifier.js";
 import { runApplyPatchTool } from "./apply-patch-tool.js";
 import { HttpsProxyAgent } from "https-proxy-agent";
@@ -99,7 +107,7 @@ type AgentLoopParams = {
    * on every request and omit the `previous_response_id` parameter.
    */
   disableResponseStorage?: boolean;
-  onItem: (item: ResponseItem) => void;
+  onItem: (item: AgentResponseItem) => void;
   onLoading: (loading: boolean) => void;
 
   /** Extra writable roots to use with sandbox execution. */
@@ -334,7 +342,7 @@ export class AgentLoop {
   // instance shape without resorting to `any`.
   private oai: OpenAI;
 
-  private onItem: (item: ResponseItem) => void;
+  private onItem: (item: AgentResponseItem) => void;
   private onLoading: (loading: boolean) => void;
   private getCommandConfirmation: (
     command: Array<string>,
@@ -360,6 +368,8 @@ export class AgentLoop {
   private lastTokenUsage: TokenUsage | null = null;
   /** Monotonically increasing counter for synthesized exec chunk events. */
   private execChunkSeq = 0;
+  private reasoningSummaryBuffer = new Map<number, string>();
+  private reasoningContentBuffer = new Map<number, string>();
 
   /**
    * Local conversation transcript used when `disableResponseStorage === true`. Holds
@@ -379,6 +389,10 @@ export class AgentLoop {
   /** Master abort controller – fires when terminate() is invoked. */
   private readonly hardAbort = new AbortController();
   private onCommandApproval?: (event: CommandApprovalEvent) => void;
+
+  private safeEmit(item: AgentResponseItem): void {
+    this.onItem(item);
+  }
 
 
   /**
@@ -450,6 +464,16 @@ export class AgentLoop {
     log(`AgentLoop.cancel(): generation bumped to ${this.generation}`);
   }
 
+  private emitPlanUpdateEvent(payload: PlanUpdatePayload): void {
+    const event = {
+      agentEvent: true,
+      type: "plan_update",
+      id: `plan-${randomUUID()}`,
+      payload,
+    } as const;
+    this.safeEmit(event);
+  }
+
   private emitExecChunk(callId: string, chunk: ExecStreamChunk): void {
     if (!chunk.text) {
       return;
@@ -470,11 +494,82 @@ export class AgentLoop {
         call_id: callId,
       } as Record<string, unknown>,
     } as ResponseItem;
-    try {
-      this.onItem(item);
-    } catch {
-      /* non-fatal */
+    this.safeEmit(item);
+  }
+
+  private emitExecLifecycleEvent(
+    event: ExecLifecycleEvent,
+    callId?: string,
+  ): void {
+    const base = {
+      agentEvent: true,
+      type: "exec_event",
+      id: `exec-${callId ?? randomUUID()}-${event.type}-${Date.now()}`,
+      phase: event.type,
+      callId,
+      command: [...event.command],
+      cwd: event.workdir,
+    };
+    if (event.type === "end") {
+      const durationSeconds =
+        Math.round(event.summary.durationMs / 100) / 10;
+      this.safeEmit({
+        ...base,
+        exitCode: event.summary.exitCode,
+        durationSeconds,
+      });
+    } else {
+      this.safeEmit(base);
     }
+  }
+
+  private emitReasoningSummaryDelta(
+    summaryIndex: number,
+    delta: string,
+  ): void {
+    const prev = this.reasoningSummaryBuffer.get(summaryIndex) ?? "";
+    const nextRaw = prev + delta;
+    this.reasoningSummaryBuffer.set(summaryIndex, nextRaw);
+    const normalized = this.normalizeReasoningText(nextRaw);
+    this.safeEmit({
+      agentEvent: true,
+      type: "reasoning_summary_delta",
+      id: `reasoning-summary-${summaryIndex}`,
+      summaryIndex,
+      delta: normalized,
+    });
+  }
+
+  private emitReasoningContentDelta(
+    contentIndex: number,
+    delta: string,
+  ): void {
+    const prev = this.reasoningContentBuffer.get(contentIndex) ?? "";
+    const nextRaw = prev + delta;
+    this.reasoningContentBuffer.set(contentIndex, nextRaw);
+    const normalized = this.normalizeReasoningText(nextRaw);
+    this.safeEmit({
+      agentEvent: true,
+      type: "reasoning_content_delta",
+      id: `reasoning-content-${contentIndex}`,
+      contentIndex,
+      delta: normalized,
+    });
+  }
+
+  private emitReasoningSectionBreak(summaryIndex: number): void {
+    this.reasoningSummaryBuffer.delete(summaryIndex);
+    this.reasoningContentBuffer.delete(summaryIndex);
+    this.safeEmit({
+      agentEvent: true,
+      type: "reasoning_section_break",
+      id: `reasoning-section-${summaryIndex}-${Date.now()}`,
+      summaryIndex,
+    });
+  }
+
+  private normalizeReasoningText(text: string): string {
+    return text.replace(/\s+/g, " ").trim();
   }
 
   /**
@@ -751,6 +846,8 @@ export class AgentLoop {
           onApproval: this.onCommandApproval
             ? (event) => this.onCommandApproval?.(event)
             : undefined,
+          onLifecycle: (event) =>
+            this.emitExecLifecycleEvent(event, callId),
         },
       );
       outputItem.output = JSON.stringify({ output: outputText, metadata });
@@ -796,6 +893,7 @@ export class AgentLoop {
         outputItem.output = JSON.stringify({ error: parsed.error });
       } else {
         outputItem.output = JSON.stringify({ status: "ok" });
+        this.emitPlanUpdateEvent(parsed);
         additionalItems.push({
           id: `plan-${Date.now()}`,
           type: "message",
@@ -881,6 +979,8 @@ export class AgentLoop {
           onApproval: this.onCommandApproval
             ? (event) => this.onCommandApproval?.(event)
             : undefined,
+          onLifecycle: (event) =>
+            this.emitExecLifecycleEvent(event, callId),
         },
       );
     outputItem.output = JSON.stringify({ output: outputText, metadata });
@@ -924,6 +1024,8 @@ export class AgentLoop {
       log(
         `AgentLoop.run(): new execAbortController created (${this.execAbortController.signal}) for generation ${this.generation}`,
       );
+      this.reasoningSummaryBuffer.clear();
+      this.reasoningContentBuffer.clear();
       // NOTE: We no longer (re‑)attach an `abort` listener to `hardAbort` here.
       // A single listener that forwards the `abort` to the current
       // `execAbortController` is installed once in the constructor. Re‑adding a
@@ -1055,7 +1157,7 @@ export class AgentLoop {
             !this.canceled &&
             !this.hardAbort.signal.aborted
           ) {
-            this.onItem(item);
+            this.safeEmit(item);
             // Mark as delivered so flush won't re-emit it
             staged[idx] = undefined;
 
@@ -1350,7 +1452,7 @@ export class AgentLoop {
               errCtx.type === "invalid_request_error";
 
             if (isTooManyTokensError) {
-              this.onItem({
+              this.safeEmit({
                 id: `error-${Date.now()}`,
                 type: "message",
                 role: "system",
@@ -1405,7 +1507,7 @@ export class AgentLoop {
                   `Message: ${errCtx.message || "unknown"}`,
                 ].join(", ");
 
-                this.onItem({
+                this.safeEmit({
                   id: `error-${Date.now()}`,
                   type: "message",
                   role: "system",
@@ -1458,7 +1560,7 @@ export class AgentLoop {
                 // ignore logging failures
               }
 
-              this.onItem({
+              this.safeEmit({
                 id: `error-${Date.now()}`,
                 type: "message",
                 role: "system",
@@ -1542,12 +1644,26 @@ export class AgentLoop {
 
               const coreEvent: CoreResponseEvent | null =
                 mapWireEventToCore(event);
-              if (coreEvent && coreEvent.type === "completed") {
-                this.lastTokenUsage = coreEvent.tokenUsage ?? null;
-                if (coreEvent.tokenUsage) {
-                  log(
-                    `AgentLoop.run(): token usage – input=${coreEvent.tokenUsage.inputTokens} output=${coreEvent.tokenUsage.outputTokens} total=${coreEvent.tokenUsage.totalTokens}`,
+              if (coreEvent) {
+                if (coreEvent.type === "completed") {
+                  this.lastTokenUsage = coreEvent.tokenUsage ?? null;
+                  if (coreEvent.tokenUsage) {
+                    log(
+                      `AgentLoop.run(): token usage – input=${coreEvent.tokenUsage.inputTokens} output=${coreEvent.tokenUsage.outputTokens} total=${coreEvent.tokenUsage.totalTokens}`,
+                    );
+                  }
+                } else if (coreEvent.type === "reasoning_summary_delta") {
+                  this.emitReasoningSummaryDelta(
+                    coreEvent.summaryIndex,
+                    coreEvent.delta,
                   );
+                } else if (coreEvent.type === "reasoning_content_delta") {
+                  this.emitReasoningContentDelta(
+                    coreEvent.contentIndex,
+                    coreEvent.delta,
+                  );
+                } else if (coreEvent.type === "reasoning_summary_part_added") {
+                  this.emitReasoningSectionBreak(coreEvent.summaryIndex);
                 }
               }
 
@@ -1772,7 +1888,7 @@ export class AgentLoop {
             }
             // Suppress internal stack on JSON parse failures
             if (err instanceof SyntaxError) {
-              this.onItem({
+              this.safeEmit({
                 id: `error-${Date.now()}`,
                 type: "message",
                 role: "system",
@@ -1791,7 +1907,7 @@ export class AgentLoop {
               err instanceof Error &&
               (err as { code?: string }).code === "insufficient_quota"
             ) {
-              this.onItem({
+              this.safeEmit({
                 id: `error-${Date.now()}`,
                 type: "message",
                 role: "system",
@@ -1829,7 +1945,7 @@ export class AgentLoop {
           // Only emit items that weren't already delivered above
           for (const item of staged) {
             if (item) {
-              this.onItem(item);
+              this.safeEmit(item);
             }
           }
         }
@@ -1914,7 +2030,7 @@ export class AgentLoop {
 
       if (isPrematureClose) {
         try {
-          this.onItem({
+              this.safeEmit({
             id: `error-${Date.now()}`,
             type: "message",
             role: "system",
@@ -2007,7 +2123,7 @@ export class AgentLoop {
         try {
           const msgText =
             "⚠️  Network error while contacting OpenAI. Please check your connection and try again.";
-          this.onItem({
+              this.safeEmit({
             id: `error-${Date.now()}`,
             type: "message",
             role: "system",
@@ -2075,7 +2191,7 @@ export class AgentLoop {
             reqId ? ` (request ID: ${reqId})` : ""
           }. Error details: ${errorDetails}. Please verify your settings and try again.`;
 
-          this.onItem({
+          this.safeEmit({
             id: `error-${Date.now()}`,
             type: "message",
             role: "system",

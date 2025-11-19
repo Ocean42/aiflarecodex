@@ -9,6 +9,7 @@ import type {
   ResponseReasoningItem,
 } from "openai/resources/responses/responses";
 import type { FileOpenerScheme } from "src/utils/config";
+import type { AgentResponseItem } from "../../utils/agent/agent-events.js";
 
 import { useTerminalSize } from "../../hooks/use-terminal-size";
 import { collapseXmlBlocks } from "../../utils/file-tag-utils";
@@ -22,6 +23,11 @@ import React, { useEffect, useMemo } from "react";
 import { formatCommandForDisplay } from "src/format-command.js";
 import { patchMarkedTerminal } from "src/marked-terminal-patch";
 import supportsHyperlinks from "supports-hyperlinks";
+import {
+  isAgentGeneratedEvent,
+  isNativeResponseItem,
+} from "../../utils/agent/agent-events.js";
+import { formatPlanUpdate } from "../../utils/agent/plan-utils.js";
 
 export default function TerminalChatResponseItem({
   item,
@@ -29,30 +35,85 @@ export default function TerminalChatResponseItem({
   setOverlayMode,
   fileOpener,
 }: {
-  item: ResponseItem;
+  item: AgentResponseItem;
   fullStdout?: boolean;
   setOverlayMode?: React.Dispatch<React.SetStateAction<OverlayModeType>>;
   fileOpener: FileOpenerScheme | undefined;
 }): React.ReactElement {
-  switch (item.type) {
+  if (isAgentGeneratedEvent(item)) {
+    switch (item.type) {
+      case "plan_update":
+        return (
+          <Box flexDirection="column" gap={1}>
+            <Text color="cyan" bold>
+              Plan Update
+            </Text>
+            <Markdown fileOpener={fileOpener}>
+              {formatPlanUpdate(item.payload)}
+            </Markdown>
+          </Box>
+        );
+      case "exec_event": {
+        const header =
+          item.phase === "begin"
+            ? "Command started"
+            : "Command finished";
+        const duration =
+          item.phase === "end" && item.durationSeconds !== undefined
+            ? `duration: ${item.durationSeconds}s`
+            : "";
+        const exitInfo =
+          item.phase === "end" && item.exitCode !== undefined
+            ? `exit: ${item.exitCode}`
+            : "";
+        const meta = [exitInfo, duration, item.cwd ? `cwd: ${item.cwd}` : ""]
+          .filter(Boolean)
+          .join(" • ");
+        return (
+          <Box flexDirection="column">
+            <Text color="yellow">{header}</Text>
+            <Text>
+              $ {item.command.join(" ")}
+              {meta ? <Text dimColor>{` (${meta})`}</Text> : ""}
+            </Text>
+          </Box>
+        );
+      }
+      case "reasoning_summary_delta":
+      case "reasoning_content_delta":
+        return (
+          <Text dimColor>
+            {item.type === "reasoning_summary_delta" ? "Thinking: " : ""}
+            {item.delta}
+          </Text>
+        );
+      case "reasoning_section_break":
+        return <Text dimColor>{"─".repeat(20)}</Text>;
+      default:
+        return <Text>{JSON.stringify(item)}</Text>;
+    }
+  }
+
+  const responseItem = item as ResponseItem;
+  switch (responseItem.type) {
     case "message":
       return (
         <TerminalChatResponseMessage
           setOverlayMode={setOverlayMode}
-          message={item}
+          message={responseItem}
           fileOpener={fileOpener}
         />
       );
     // @ts-expect-error new item types aren't in SDK yet
     case "local_shell_call":
     case "function_call":
-      return <TerminalChatResponseToolCall message={item} />;
+      return <TerminalChatResponseToolCall message={responseItem} />;
     // @ts-expect-error new item types aren't in SDK yet
     case "local_shell_call_output":
     case "function_call_output":
       return (
         <TerminalChatResponseToolCallOutput
-          message={item}
+          message={responseItem}
           fullStdout={fullStdout}
         />
       );
@@ -61,13 +122,16 @@ export default function TerminalChatResponseItem({
   }
 
   // @ts-expect-error `reasoning` is not in the responses API yet
-  if (item.type === "reasoning") {
+  if (responseItem.type === "reasoning") {
     return (
-      <TerminalChatResponseReasoning message={item} fileOpener={fileOpener} />
+      <TerminalChatResponseReasoning
+        message={responseItem}
+        fileOpener={fileOpener}
+      />
     );
   }
 
-  return <TerminalChatResponseGenericMessage message={item} />;
+  return <TerminalChatResponseGenericMessage message={responseItem} />;
 }
 
 // TODO: this should be part of `ResponseReasoningItem`. Also it doesn't work.

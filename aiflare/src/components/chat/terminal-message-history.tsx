@@ -1,22 +1,23 @@
 import type { OverlayModeType } from "./terminal-chat.js";
 import type { TerminalHeaderProps } from "./terminal-header.js";
 import type { GroupedResponseItem } from "./use-message-grouping.js";
-import type { ResponseItem } from "openai/resources/responses/responses.mjs";
+import type { AgentResponseItem } from "../../utils/agent/agent-events.js";
 import type { FileOpenerScheme } from "src/utils/config.js";
 
 import TerminalChatResponseItem from "./terminal-chat-response-item.js";
 import TerminalHeader from "./terminal-header.js";
 import { Box, Static } from "ink";
 import React, { useMemo } from "react";
+import { isNativeResponseItem } from "../../utils/agent/agent-events.js";
 
 // A batch entry can either be a standalone response item or a grouped set of
 // items (e.g. auto‑approved tool‑call batches) that should be rendered
 // together.
-type BatchEntry = { item?: ResponseItem; group?: GroupedResponseItem };
+type BatchEntry = { item?: AgentResponseItem; group?: GroupedResponseItem };
 type TerminalMessageHistoryProps = {
   batch: Array<BatchEntry>;
   groupCounts: Record<string, number>;
-  items: Array<ResponseItem>;
+  items: Array<AgentResponseItem>;
   userMsgCount: number;
   confirmationPrompt: React.ReactNode;
   loading: boolean;
@@ -38,7 +39,10 @@ const TerminalMessageHistory: React.FC<TerminalMessageHistoryProps> = ({
   fileOpener,
 }) => {
   // Flatten batch entries to response items.
-  const messages = useMemo(() => batch.map(({ item }) => item!), [batch]);
+  const messages = useMemo(
+    () => batch.map(({ item }) => item!).filter(Boolean),
+    [batch],
+  );
 
   return (
     <Box flexDirection="column">
@@ -50,28 +54,39 @@ const TerminalMessageHistory: React.FC<TerminalMessageHistoryProps> = ({
             return <TerminalHeader key="header" {...headerProps} />;
           }
 
-          // After the guard above, item is a ResponseItem
-          const message = item as ResponseItem;
-          // Suppress empty reasoning updates (i.e. items with an empty summary).
-          const msg = message as unknown as { summary?: Array<unknown> };
-          if (msg.summary?.length === 0) {
+          const message = item as AgentResponseItem;
+          if (
+            isNativeResponseItem(message) &&
+            message.type === "reasoning" &&
+            Array.isArray((message as { summary?: Array<unknown> }).summary) &&
+            ((message as { summary?: Array<unknown> }).summary?.length ?? 0) ===
+              0
+          ) {
             return null;
           }
           return (
             <Box
-              key={`${message.id}-${index}`}
+              key={`${(message as { id?: string }).id ?? index}-${index}`}
               flexDirection="column"
               marginLeft={
+                isNativeResponseItem(message) &&
                 message.type === "message" &&
-                (message.role === "user" || message.role === "assistant")
+                ((message as { role?: string }).role === "user" ||
+                  (message as { role?: string }).role === "assistant")
                   ? 0
                   : 4
               }
               marginTop={
-                message.type === "message" && message.role === "user" ? 0 : 1
+                isNativeResponseItem(message) &&
+                message.type === "message" &&
+                (message as { role?: string }).role === "user"
+                  ? 0
+                  : 1
               }
               marginBottom={
-                message.type === "message" && message.role === "assistant"
+                isNativeResponseItem(message) &&
+                message.type === "message" &&
+                (message as { role?: string }).role === "assistant"
                   ? 1
                   : 0
               }

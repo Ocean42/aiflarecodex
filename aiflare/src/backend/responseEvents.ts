@@ -75,6 +75,38 @@ export function mapWireEventToCore(
       return { type: "output_item_done", item: ev.item };
     case "response.output_text.delta":
       return { type: "output_text_delta", delta: String(ev.delta) };
+    case "response.reasoning_summary_text.delta":
+      if (
+        typeof ev.summary_index === "number" &&
+        typeof ev.delta === "string"
+      ) {
+        return {
+          type: "reasoning_summary_delta",
+          summaryIndex: ev.summary_index,
+          delta: ev.delta,
+        };
+      }
+      return null;
+    case "response.reasoning_text.delta":
+      if (
+        typeof ev.content_index === "number" &&
+        typeof ev.delta === "string"
+      ) {
+        return {
+          type: "reasoning_content_delta",
+          contentIndex: ev.content_index,
+          delta: ev.delta,
+        };
+      }
+      return null;
+    case "response.reasoning_summary_part.added":
+      if (typeof ev.summary_index === "number") {
+        return {
+          type: "reasoning_summary_part_added",
+          summaryIndex: ev.summary_index,
+        };
+      }
+      return null;
     case "response.completed": {
       const usage = mapUsage(ev.response.usage as unknown);
       return {
@@ -87,4 +119,3 @@ export function mapWireEventToCore(
       return null;
   }
 }
-

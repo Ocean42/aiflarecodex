@@ -1,10 +1,12 @@
 import type { ResponseItem } from "openai/resources/responses/responses.mjs";
+import type { AgentResponseItem } from "../utils/agent/agent-events.js";
 
 import { Box, Text, useInput } from "ink";
 import React, { useMemo, useState } from "react";
+import { isNativeResponseItem } from "../utils/agent/agent-events.js";
 
 type Props = {
-  items: Array<ResponseItem>;
+  items: Array<AgentResponseItem>;
   onExit: () => void;
 };
 
@@ -98,7 +100,7 @@ export default function HistoryOverlay({ items, onExit }: Props): JSX.Element {
   );
 }
 
-function formatHistoryForDisplay(items: Array<ResponseItem>): {
+function formatHistoryForDisplay(items: Array<AgentResponseItem>): {
   commands: Array<string>;
   files: Array<string>;
 } {
@@ -106,6 +108,9 @@ function formatHistoryForDisplay(items: Array<ResponseItem>): {
   const filesSet = new Set<string>();
 
   for (const item of items) {
+    if (!isNativeResponseItem(item)) {
+      continue;
+    }
     const userPrompt = processUserMessage(item);
     if (userPrompt) {
       commands.push(userPrompt);

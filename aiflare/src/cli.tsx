@@ -22,7 +22,7 @@ import type { AppRollout } from "./app";
 import type { ApprovalPolicy } from "./approvals";
 import type { CommandConfirmation } from "./utils/agent/agent-loop";
 import type { AppConfig } from "./utils/config";
-import type { ResponseItem } from "openai/resources/responses/responses";
+import type { AgentResponseItem } from "./utils/agent/agent-events.js";
 import type { ReasoningEffort } from "openai/resources.mjs";
 
 import App from "./app";
@@ -30,6 +30,8 @@ import { runSinglePass } from "./cli-singlepass";
 import SessionsOverlay from "./components/sessions-overlay.js";
 import { AgentLoop } from "./utils/agent/agent-loop";
 import { ReviewDecision } from "./utils/agent/review";
+import { isAgentGeneratedEvent } from "./utils/agent/agent-events.js";
+import { formatPlanUpdate } from "./utils/agent/plan-utils.js";
 import { AutoApprovalMode } from "./utils/auto-approval-mode";
 import { checkForUpdates } from "./utils/check-updates";
 import {
@@ -684,7 +686,28 @@ const instance = render(
 );
 setInkRenderer(instance);
 
-function formatResponseItemForQuietMode(item: ResponseItem): string {
+function formatResponseItemForQuietMode(item: AgentResponseItem): string {
+  if (isAgentGeneratedEvent(item)) {
+    switch (item.type) {
+      case "plan_update":
+        return formatPlanUpdate(item.payload);
+      case "exec_event": {
+        const cmd = item.command.join(" ");
+        const suffix =
+          item.phase === "end"
+            ? ` (exit=${item.exitCode ?? "unknown"}, duration=${item.durationSeconds ?? "?"}s)`
+            : "";
+        return `[exec ${item.phase}] ${cmd}${suffix}`;
+      }
+      case "reasoning_summary_delta":
+      case "reasoning_content_delta":
+        return `[reasoning] ${item.delta}`;
+      case "reasoning_section_break":
+        return "[reasoning] ---";
+      default:
+        return JSON.stringify(item);
+    }
+  }
   if (!PRETTY_PRINT) {
     return JSON.stringify(item);
   }
@@ -754,7 +777,7 @@ async function runQuietMode({
     approvalPolicy,
     additionalWritableRoots,
     disableResponseStorage: config.disableResponseStorage,
-    onItem: (item: ResponseItem) => {
+    onItem: (item: AgentResponseItem) => {
       // eslint-disable-next-line no-console
       console.log(formatResponseItemForQuietMode(item));
     },
