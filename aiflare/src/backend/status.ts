@@ -1,6 +1,6 @@
 import type { RateLimitSnapshot } from "./rateLimitTypes.js";
 import { BackendClient } from "./client.js";
-import { getChatgptBaseUrl, loadAuthTokens } from "./auth.js";
+import { BackendCredentials } from "./backend-credentials.js";
 
 export interface BackendStatusResult {
   snapshot: RateLimitSnapshot | null;
@@ -8,20 +8,18 @@ export interface BackendStatusResult {
 }
 
 export async function fetchBackendRateLimits(): Promise<BackendStatusResult> {
-  const tokens = await loadAuthTokens();
-  if (!tokens) {
+  let creds: BackendCredentials;
+  try {
+    creds = BackendCredentials.ensure();
+  } catch (error) {
     return {
       snapshot: null,
-      error:
-        "No ChatGPT credentials found in AIFLARE_CODEY_HOME/auth.json (default: ~/.codey/auth.json). Run `codey --login` to connect your ChatGPT account.",
+      error: (error as Error).message,
     };
   }
 
-  const baseUrl = getChatgptBaseUrl();
   const client = new BackendClient({
-    baseUrl,
-    bearerToken: tokens.access_token,
-    chatGptAccountId: tokens.account_id,
+    ...creds.toBackendClientOptions(),
   });
 
   try {

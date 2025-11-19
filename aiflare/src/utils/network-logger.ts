@@ -1,6 +1,8 @@
 import { logHttpDebug } from "./logger/httpDebug.js";
+import { httpManager, type HttpEvent } from "./http-manager.js";
 
 let installed = false;
+let unsubscribe: (() => void) | null = null;
 
 function maskHeaderValue(name: string, value: string): string {
   const lower = name.toLowerCase();
@@ -84,82 +86,53 @@ function formatBody(body: BodyInit | null | undefined): string {
   return `<unknown ${typeof body}>`;
 }
 
-function describeInput(
-  input: RequestInfo,
-  init?: RequestInit,
-): { url: string; method: string; headers?: HeadersInit; body?: BodyInit } {
-  if (typeof input === "string") {
-    return {
-      url: input,
-      method: (init?.method ?? "GET").toUpperCase(),
-      headers: init?.headers,
-      body: init?.body ?? undefined,
-    };
-  }
-  if (input instanceof URL) {
-    return {
-      url: input.toString(),
-      method: (init?.method ?? "GET").toUpperCase(),
-      headers: init?.headers,
-      body: init?.body ?? undefined,
-    };
-  }
-
-  return {
-    url: input.url,
-    method: (init?.method ?? input.method ?? "GET").toUpperCase(),
-    headers: init?.headers ?? input.headers,
-    body: init?.body ?? (input as Request).body ?? undefined,
-  };
-}
-
 export function installFetchLogger(): void {
-  if (installed || typeof globalThis.fetch !== "function") {
+  if (installed) {
     return;
   }
   installed = true;
-  const originalFetch = globalThis.fetch.bind(globalThis);
 
-  globalThis.fetch = async (
-    input: RequestInfo,
-    init?: RequestInit,
-  ): Promise<Response> => {
-    const { url, method, headers, body } = describeInput(input, init);
-    const headerEntries = formatHeaders(headers);
-    const bodyText = formatBody(body);
-    logHttpDebug({
-      phase: "request",
-      method,
-      url,
-      headers: headerEntries,
-      body: bodyText,
-      tag: "fetch",
-    });
-
-    try {
-      const response = await originalFetch(input, init);
+  unsubscribe = httpManager.addListener((event: HttpEvent) => {
+    if (event.type === "request") {
+      const headerEntries = formatHeaders(event.headers);
+      const bodyText = formatBody(event.bodySummary ?? null);
+      logHttpDebug({
+        phase: "request",
+        method: event.method,
+        url: event.url,
+        headers: headerEntries,
+        body: bodyText,
+        tag: "fetch",
+      });
+    } else if (event.type === "response") {
       logHttpDebug({
         phase: "response",
-        method,
-        url,
-        headers: formatHeaders(response.headers),
+        method: event.method,
+        url: event.url,
+        headers: formatHeaders(event.headers),
         body: undefined,
         tag: "fetch",
         extra: {
-          status: response.status,
-          contentType: response.headers.get("content-type") ?? "<unknown>",
+          status: event.status,
+          durationMs: event.durationMs,
         },
       });
-      return response;
-    } catch (error) {
+    } else {
       logHttpDebug({
         phase: "error",
-        method,
-        url,
-        body: error instanceof Error ? error.message : String(error),
+        method: event.method,
+        url: event.url,
+        body: event.error,
         tag: "fetch",
       });
-      throw error;
     }
-  };
+  });
+}
+
+export function uninstallFetchLoggerForTests(): void {
+  if (unsubscribe) {
+    unsubscribe();
+    unsubscribe = null;
+  }
+  installed = false;
 }

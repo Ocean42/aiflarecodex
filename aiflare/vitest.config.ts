@@ -8,5 +8,6 @@ export default defineConfig({
   test: {
     threads: false,
     environment: "node",
+    setupFiles: ["dotenv/config"],
   },
 });

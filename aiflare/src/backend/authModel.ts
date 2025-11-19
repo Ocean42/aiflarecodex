@@ -26,9 +26,6 @@ export interface AuthDotJson {
   last_refresh?: string;
 }
 
-const AUTH_DIR = getCodexHomeDir();
-const AUTH_FILE = getAuthFilePath();
-
 export type AuthModeDebug = "chatgpt" | "api-key";
 
 export interface AuthDebugInfo {
@@ -174,8 +171,9 @@ function normaliseTokenData(rawTokens: unknown): TokenData | undefined {
 }
 
 export async function loadAuthDotJson(): Promise<AuthDotJson | null> {
+  const authFile = getAuthFilePath();
   try {
-    const contents = await fs.readFile(AUTH_FILE, "utf8");
+    const contents = await fs.readFile(authFile, "utf8");
     const raw = JSON.parse(contents) as {
       OPENAI_API_KEY?: unknown;
       tokens?: unknown;
@@ -203,12 +201,13 @@ export async function loadAuthDotJson(): Promise<AuthDotJson | null> {
 }
 
 export function loadAuthDotJsonSync(): AuthDotJson | null {
-  if (!existsSync(AUTH_FILE)) {
+  const authFile = getAuthFilePath();
+  if (!existsSync(authFile)) {
     return null;
   }
 
   try {
-    const contents = readFileSync(AUTH_FILE, "utf8");
+    const contents = readFileSync(authFile, "utf8");
     const raw = JSON.parse(contents) as {
       OPENAI_API_KEY?: unknown;
       tokens?: unknown;
@@ -276,9 +275,11 @@ export function getProjectIdFromAuthSync(): string | null {
 }
 
 export async function saveAuthDotJson(auth: AuthDotJson): Promise<void> {
+  const authFile = getAuthFilePath();
+  const authDir = path.dirname(authFile);
   try {
-    if (!existsSync(AUTH_DIR)) {
-      mkdirSync(AUTH_DIR, { recursive: true });
+    if (!existsSync(authDir)) {
+      mkdirSync(authDir, { recursive: true });
     }
   } catch {
     // Best‑effort – if we cannot ensure the directory exists we still attempt
@@ -315,5 +316,5 @@ export async function saveAuthDotJson(auth: AuthDotJson): Promise<void> {
   }
 
   const payload = JSON.stringify(serialisable, null, 2);
-  await fs.writeFile(AUTH_FILE, payload, { mode: 0o600 });
+  await fs.writeFile(authFile, payload, { mode: 0o600 });
 }

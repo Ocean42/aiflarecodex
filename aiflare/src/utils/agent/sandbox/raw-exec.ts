@@ -1,4 +1,4 @@
-import type { ExecResult } from "./interface";
+import type { ExecResult, ExecStreamChunk } from "./interface";
 import type { AppConfig } from "../../config";
 import type {
   ChildProcess,
@@ -23,6 +23,7 @@ export function exec(
   options: SpawnOptions,
   config: AppConfig,
   abortSignal?: AbortSignal,
+  onChunk?: (chunk: ExecStreamChunk) => void,
 ): Promise<ExecResult> {
   // Adapt command for the current platform (e.g., convert 'ls' to 'dir' on Windows)
   const adaptedCommand = adaptCommandForPlatform(command);
@@ -149,15 +150,24 @@ export function exec(
     const maxLines = config?.tools?.shell?.maxLines;
 
     // Collect stdout and stderr up to configured limits.
+    const emitChunk = (stream: ExecStreamChunk["stream"], text: string) => {
+      if (!text) {
+        return;
+      }
+      onChunk?.({ stream, text });
+    };
+
     const stdoutCollector = createTruncatingCollector(
       child.stdout!,
       maxBytes,
       maxLines,
+      (text) => emitChunk("stdout", text),
     );
     const stderrCollector = createTruncatingCollector(
       child.stderr!,
       maxBytes,
       maxLines,
+      (text) => emitChunk("stderr", text),
     );
 
     child.on("exit", (code, signal) => {

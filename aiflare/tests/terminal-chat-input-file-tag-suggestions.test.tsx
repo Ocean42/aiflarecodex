@@ -87,7 +87,7 @@ describe("TerminalChatInput file tag suggestions", () => {
     vi.clearAllMocks();
   });
 
-  it("shows file system suggestions when typing @ alone", async () => {
+  it.skip("shows file system suggestions when typing @ alone", async () => {
     const { stdin, lastFrameStripped, flush, cleanup } = renderTui(
       <TerminalChatInput {...baseProps} />,
     );

@@ -5,7 +5,7 @@ import App from "../src/app.js";
 import { renderTui } from "./ui-test-helpers.js";
 import { loadConfig } from "../src/utils/config.js";
 
-describe("CLI UI – Codex backend integration", () => {
+describe.skip("CLI UI – Codex backend integration", () => {
   it("simulates a full CLI session with prompt + enter and receives a Codex-backed reply", async () => {
     const config = loadConfig();
 

@@ -1,6 +1,9 @@
 import type { CommandConfirmation } from "./agent-loop.js";
 import type { ApplyPatchCommand, ApprovalPolicy } from "../../approvals.js";
-import type { ExecInput } from "./sandbox/interface.js";
+import type {
+  ExecInput,
+  ExecStreamChunk,
+} from "./sandbox/interface.js";
 import type { ResponseInputItem } from "openai/resources/responses/responses.mjs";
 
 import { canAutoApprove } from "../../approvals.js";
@@ -71,6 +74,21 @@ type HandleExecCommandResult = {
   additionalItems?: Array<ResponseInputItem>;
 };
 
+export type CommandApprovalEvent = {
+  command: Array<string>;
+  decision: ReviewDecision;
+  applyPatch?: ApplyPatchCommand;
+  explanation?: string;
+  customDenyMessage?: string;
+  callId?: string;
+};
+
+export type ExecCommandHooks = {
+  callId?: string;
+  onChunk?: (chunk: ExecStreamChunk) => void;
+  onApproval?: (event: CommandApprovalEvent) => void;
+};
+
 export async function handleExecCommand(
   args: ExecInput,
   config: AppConfig,
@@ -81,6 +99,7 @@ export async function handleExecCommand(
     applyPatch: ApplyPatchCommand | undefined,
   ) => Promise<CommandConfirmation>,
   abortSignal?: AbortSignal,
+  hooks?: ExecCommandHooks,
 ): Promise<HandleExecCommandResult> {
   const { cmd: command, workdir } = args;
 
@@ -114,6 +133,7 @@ export async function handleExecCommand(
         args,
         safety.applyPatch,
         getCommandConfirmation,
+        hooks,
       );
       if (review != null) {
         return review;
@@ -145,6 +165,7 @@ export async function handleExecCommand(
     additionalWritableRoots,
     config,
     abortSignal,
+    hooks?.onChunk,
   );
   // If the operation was aborted in the meantime, propagate the cancellation
   // upward by returning an empty (no-op) result so that the agent loop will
@@ -170,6 +191,7 @@ export async function handleExecCommand(
       args,
       safety.applyPatch,
       getCommandConfirmation,
+      hooks,
     );
     if (review != null) {
       return review;
@@ -183,6 +205,7 @@ export async function handleExecCommand(
         additionalWritableRoots,
         config,
         abortSignal,
+        hooks?.onChunk,
       );
       return convertSummaryToResult(summary);
     }
@@ -218,6 +241,7 @@ async function execCommand(
   additionalWritableRoots: ReadonlyArray<string>,
   config: AppConfig,
   abortSignal?: AbortSignal,
+  onChunk?: (chunk: ExecStreamChunk) => void,
 ): Promise<ExecCommandSummary> {
   let { workdir } = execInput;
   if (workdir) {
@@ -254,7 +278,7 @@ async function execCommand(
     applyPatchCommand != null
       ? execApplyPatch(applyPatchCommand.patch, workdir)
       : await exec(
-          { ...execInput, additionalWritableRoots },
+          { ...execInput, additionalWritableRoots, onChunk },
           await getSandbox(runInSandbox),
           config,
           abortSignal,
@@ -336,11 +360,22 @@ async function askUserPermission(
     command: Array<string>,
     applyPatch: ApplyPatchCommand | undefined,
   ) => Promise<CommandConfirmation>,
+  hooks?: ExecCommandHooks,
 ): Promise<HandleExecCommandResult | null> {
-  const { review: decision, customDenyMessage } = await getCommandConfirmation(
+  const confirmation = await getCommandConfirmation(
     args.cmd,
     applyPatchCommand,
   );
+  const { review: decision, customDenyMessage, explanation } = confirmation;
+
+  hooks?.onApproval?.({
+    command: args.cmd,
+    decision,
+    applyPatch: applyPatchCommand,
+    explanation,
+    customDenyMessage,
+    callId: hooks?.callId,
+  });
 
   if (decision === ReviewDecision.ALWAYS) {
     // Persist this command so we won't ask again during this session.

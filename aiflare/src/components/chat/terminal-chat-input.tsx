@@ -58,6 +58,7 @@ export default function TerminalChatInput({
   onCompact,
   onStatus,
   onLogout,
+  onTestPlan,
   interruptAgent,
   active,
   thinkingSeconds,
@@ -84,6 +85,7 @@ export default function TerminalChatInput({
   onCompact: () => void;
   onStatus: () => void;
   onLogout: () => void;
+  onTestPlan?: () => void;
   interruptAgent: () => void;
   active: boolean;
   thinkingSeconds: number;
@@ -319,6 +321,11 @@ export default function TerminalChatInput({
                 case "/logout":
                   onLogout();
                   break;
+                case "/plan-test":
+                  if (process.env["VITEST"]) {
+                    onTestPlan?.();
+                  }
+                  break;
                 default:
                   break;
               }
@@ -515,6 +522,10 @@ export default function TerminalChatInput({
         setInput("");
         onCompact();
         return;
+      } else if (inputValue === "/status") {
+        setInput("");
+        onStatus();
+        return;
       } else if (inputValue.startsWith("/model")) {
         setInput("");
         openModelOverlay();
@@ -526,6 +537,12 @@ export default function TerminalChatInput({
       } else if (inputValue === "/logout") {
         setInput("");
         onLogout();
+        return;
+      } else if (inputValue === "/plan-test") {
+        setInput("");
+        if (process.env["VITEST"]) {
+          onTestPlan?.();
+        }
         return;
       } else if (["exit", "q", ":q"].includes(inputValue)) {
         setInput("");

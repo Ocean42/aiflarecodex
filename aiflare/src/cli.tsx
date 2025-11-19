@@ -658,7 +658,7 @@ if (cli.flags.quiet) {
 //    it is more dangerous than --fullAuto we deliberately give it lower
 //    priority so a user specifying both flags still gets the safer behaviour.
 // 3. --autoEdit – automatically approve edits, but prompt for commands.
-// 4. config.approvalMode - use the approvalMode setting from AIFLARE_CODEY_HOME/config.json (default: ~/.codey/config.json).
+// 4. config.approvalMode - use the approvalMode setting from ~/.codey/config.json.
 // 5. Default – suggest mode (prompt for everything).
 
 const approvalPolicy: ApprovalPolicy =

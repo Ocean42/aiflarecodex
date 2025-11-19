@@ -6,9 +6,13 @@ import chalk from "chalk";
 import ModelOverlay from "src/components/model-overlay.js";
 
 // Mock the necessary dependencies
-vi.mock("../src/utils/logger/log.js", () => ({
-  log: vi.fn(),
-}));
+vi.mock("../src/utils/logger/log.js", async () => {
+  const actual = await vi.importActual("../src/utils/logger/log.js");
+  return {
+    ...actual,
+    log: vi.fn(),
+  };
+});
 
 vi.mock("chalk", () => ({
   default: {

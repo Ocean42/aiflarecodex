@@ -1,4 +1,4 @@
-import type { ExecResult } from "./interface.js";
+import type { ExecResult, ExecStreamChunk } from "./interface.js";
 import type { AppConfig } from "../../config.js";
 import type { SpawnOptions } from "child_process";
 
@@ -22,6 +22,7 @@ export async function execWithLandlock(
   userProvidedWritableRoots: ReadonlyArray<string>,
   config: AppConfig,
   abortSignal?: AbortSignal,
+  onChunk?: (chunk: ExecStreamChunk) => void,
 ): Promise<ExecResult> {
   const sandboxExecutable = await getSandboxExecutable();
 
@@ -46,7 +47,7 @@ export async function execWithLandlock(
     ...cmd,
   ];
 
-  return exec(fullCommand, opts, config, abortSignal);
+  return exec(fullCommand, opts, config, abortSignal, onChunk);
 }
 
 /**

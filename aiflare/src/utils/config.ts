@@ -177,6 +177,8 @@ export type StoredConfig = {
   memory?: MemoryConfig;
   /** Whether to enable desktop notifications for responses */
   notify?: boolean;
+  /** Command to run when a turn finishes (array of argv tokens) */
+  notifyCommand?: Array<string>;
   /** Disable server-side response storage (send full transcript each request) */
   disableResponseStorage?: boolean;
   flexMode?: boolean;
@@ -227,6 +229,8 @@ export type AppConfig = {
   reasoningEffort?: ReasoningEffort;
   /** Whether to enable desktop notifications for responses */
   notify?: boolean;
+  /** Command invoked on turn completion */
+  notifyCommand?: Array<string>;
 
   /** Disable server-side response storage (send full transcript each request) */
   disableResponseStorage?: boolean;
@@ -412,9 +416,15 @@ export const loadConfig = (
 
   const userInstructions = InstructionsManager.getDefaultInstructions();
 
-  // Project doc support.
-  const projectDocPath: string | null = null;
-  const combinedInstructions = userInstructions;
+  const cwd = options.cwd ?? process.cwd();
+  const projectDoc =
+    options.disableProjectDoc === true
+      ? ""
+      : loadProjectDoc(cwd, options.projectDocPath);
+  const combinedInstructions =
+    projectDoc && projectDoc.trim() !== ""
+      ? `${userInstructions}${PROJECT_DOC_SEPARATOR}${projectDoc}`
+      : userInstructions;
 
   // Treat empty string ("" or whitespace) as absence so we can fall back to
   // the latest DEFAULT_MODEL.
@@ -505,6 +515,9 @@ export const loadConfig = (
   }
   // Notification setting: enable desktop notifications when set in config
   config.notify = storedConfig.notify === true;
+  config.notifyCommand = Array.isArray(storedConfig.notifyCommand)
+    ? storedConfig.notifyCommand
+    : undefined;
   // Flex-mode setting: enable the flex-mode service tier when set in config
   if (storedConfig.flexMode !== undefined) {
     config.flexMode = storedConfig.flexMode;

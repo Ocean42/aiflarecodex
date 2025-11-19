@@ -42,7 +42,10 @@ export function exec(
     workdir,
     timeoutInMillis,
     additionalWritableRoots,
-  }: ExecInput & { additionalWritableRoots: ReadonlyArray<string> },
+    onChunk,
+  }: ExecInput & {
+    additionalWritableRoots: ReadonlyArray<string>;
+  },
   sandbox: SandboxType,
   config: AppConfig,
   abortSignal?: AbortSignal,
@@ -56,7 +59,7 @@ export function exec(
   switch (sandbox) {
     case SandboxType.NONE: {
       // SandboxType.NONE uses the raw exec implementation.
-      return rawExec(cmd, opts, config, abortSignal);
+      return rawExec(cmd, opts, config, abortSignal, onChunk);
     }
     case SandboxType.MACOS_SEATBELT: {
       // Merge default writable roots with any user-specified ones.
@@ -65,7 +68,14 @@ export function exec(
         os.tmpdir(),
         ...additionalWritableRoots,
       ];
-      return execWithSeatbelt(cmd, opts, writableRoots, config, abortSignal);
+      return execWithSeatbelt(
+        cmd,
+        opts,
+        writableRoots,
+        config,
+        abortSignal,
+        onChunk,
+      );
     }
     case SandboxType.LINUX_LANDLOCK: {
       return execWithLandlock(
@@ -74,6 +84,7 @@ export function exec(
         additionalWritableRoots,
         config,
         abortSignal,
+        onChunk,
       );
     }
   }

@@ -85,3 +85,5 @@ CHANGELOG.ignore.md
 # nix related
 .direnv
 .envrc
+/aiflare/log
+/aiflare/log

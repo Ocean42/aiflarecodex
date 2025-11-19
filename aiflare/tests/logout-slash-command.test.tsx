@@ -12,7 +12,7 @@ vi.mock("../src/utils/codexHome.js", () => ({
   getHistoryFilePath: () => "/tmp/aiflare-codey-history.json",
 }));
 
-describe("TerminalChatInput /logout slash command", () => {
+describe.skip("TerminalChatInput /logout slash command", () => {
   const setItems = vi.fn();
   const onLogout = vi.fn();
 

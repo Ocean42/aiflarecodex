@@ -8,6 +8,7 @@ export type ExecInput = {
   cmd: Array<string>;
   workdir: string | undefined;
   timeoutInMillis: number | undefined;
+  onChunk?: (chunk: ExecStreamChunk) => void;
 };
 
 /**
@@ -18,6 +19,11 @@ export type ExecResult = {
   stdout: string;
   stderr: string;
   exitCode: number;
+};
+
+export type ExecStreamChunk = {
+  stream: "stdout" | "stderr";
+  text: string;
 };
 
 /**

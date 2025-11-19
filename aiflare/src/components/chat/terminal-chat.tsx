@@ -31,6 +31,7 @@ import { saveRollout } from "../../utils/storage/save-rollout.js";
 import { CLI_VERSION } from "../../version.js";
 import { fetchBackendRateLimits } from "../../backend/status.js";
 import { getAuthDebugInfoSync } from "../../backend/authModel.js";
+import { formatPlanUpdate } from "../../utils/agent/plan-utils.js";
 import ApprovalModeOverlay from "../approval-mode-overlay.js";
 import DiffOverlay from "../diff-overlay.js";
 import HelpOverlay from "../help-overlay.js";
@@ -41,10 +42,11 @@ import chalk from "chalk";
 import fs from "fs/promises";
 import { Box, Text } from "ink";
 import { spawn } from "node:child_process";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { inspect } from "util";
 import { existsSync, rmSync } from "fs";
 import { getAuthFilePath } from "../../utils/codexHome.js";
+import { formatPlanUpdate } from "../../utils/agent/plan-utils.js";
 
 export type OverlayModeType =
   | "none"
@@ -148,6 +150,7 @@ export default function TerminalChat({
   additionalWritableRoots,
   fullStdout,
 }: Props): React.ReactElement {
+  const isTestEnv = process.env["VITEST"] === "true";
   const notify = Boolean(config.notify);
   const [model, setModel] = useState<string>(config.model);
   const [provider, setProvider] = useState<string>(config.provider || "openai");
@@ -192,6 +195,30 @@ export default function TerminalChat({
       setLoading(false);
     }
   };
+
+  const emitTestPlan = useCallback(() => {
+    const planText = formatPlanUpdate({
+      explanation: "Test plan",
+      plan: [
+        { step: "Analyse the user request", status: "pending" },
+        { step: "Provide the final answer", status: "pending" },
+      ],
+    });
+    setItems((prev) => [
+      ...prev,
+      {
+        id: `plan-test-${Date.now()}`,
+        type: "message",
+        role: "assistant",
+        content: [
+          {
+            type: "output_text",
+            text: planText,
+          },
+        ],
+      } as ResponseItem,
+    ]);
+  }, [setItems]);
 
   const {
     requestConfirmation,
@@ -721,6 +748,7 @@ export default function TerminalChat({
                 ]);
               })();
             }}
+            onTestPlan={isTestEnv ? emitTestPlan : undefined}
             active={overlayMode === "none"}
             interruptAgent={() => {
               if (!agent) {

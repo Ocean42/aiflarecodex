@@ -2,20 +2,13 @@ import { describe, it, expect } from "vitest";
 
 import { AgentLoop } from "../src/utils/agent/agent-loop.js";
 import { ReviewDecision } from "../src/utils/agent/review.js";
-import { loadConfig, getApiKey } from "../src/utils/config.js";
+import { loadConfig } from "../src/utils/config.js";
 import { log } from "../src/utils/logger/log.js";
 
 describe("AgentLoop – live chat integration", () => {
   it("can complete a simple turn with a real backend and obeys a precise instruction", async () => {
     const config = loadConfig();
     const provider = config.provider ?? "openai";
-
-    const key = getApiKey(provider);
-    if (!key) {
-      throw new Error(
-        "LIVE OPENAI TEST: No API key configured for provider; cannot verify real backend behaviour.",
-      );
-    }
 
     const received: Array<any> = [];
 

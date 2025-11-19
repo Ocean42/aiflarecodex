@@ -8,6 +8,7 @@ import {
   OPENAI_ORGANIZATION,
 } from "./config.js";
 import OpenAI, { AzureOpenAI } from "openai";
+import { httpManager } from "./http-manager.js";
 
 type OpenAIClientConfig = {
   provider: string;
@@ -38,6 +39,7 @@ export function createOpenAIClient(
       apiVersion: AZURE_OPENAI_API_VERSION,
       timeout: OPENAI_TIMEOUT_MS,
       defaultHeaders: headers,
+      fetch: httpManager.fetch.bind(httpManager),
     });
   }
 
@@ -46,5 +48,6 @@ export function createOpenAIClient(
     baseURL: getBaseUrl(config.provider),
     timeout: OPENAI_TIMEOUT_MS,
     defaultHeaders: headers,
+    fetch: httpManager.fetch.bind(httpManager),
   });
 }

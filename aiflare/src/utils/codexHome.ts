@@ -4,14 +4,9 @@ import { join } from "path";
 /**
  * Resolve the Codey home directory.
  *
- * - If `AIFLARE_CODEY_HOME` is set and non-empty, use it as-is.
- * - Otherwise fall back to `~/.codey`.
+ * Always `~/.codey` – no environment overrides or fallbacks.
  */
 export function getCodexHomeDir(): string {
-  const env = process.env["AIFLARE_CODEY_HOME"];
-  if (env && env.trim() !== "") {
-    return env.trim();
-  }
   return join(homedir(), ".codey");
 }
 

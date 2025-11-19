@@ -11,6 +11,7 @@ export function createTruncatingCollector(
   stream: NodeJS.ReadableStream,
   byteLimit: number = DEFAULT_SHELL_MAX_BYTES,
   lineLimit: number = DEFAULT_SHELL_MAX_LINES,
+  onChunk?: (text: string) => void,
 ): {
   getString: () => string;
   hit: boolean;
@@ -32,6 +33,8 @@ export function createTruncatingCollector(
       }
     }
     // If entire chunk fits within byte and line limits, take it whole
+    let consumedSlice: Buffer | null = null;
+
     if (
       totalBytes + dataLength <= byteLimit &&
       totalLines + newlineCount <= lineLimit
@@ -39,6 +42,7 @@ export function createTruncatingCollector(
       chunks.push(data);
       totalBytes += dataLength;
       totalLines += newlineCount;
+      consumedSlice = data;
     } else {
       // Otherwise, take a partial slice up to the first limit breach
       const allowedBytes = byteLimit - totalBytes;
@@ -57,11 +61,19 @@ export function createTruncatingCollector(
         bytesTaken++;
       }
       if (bytesTaken > 0) {
-        chunks.push(data.slice(0, bytesTaken));
+        consumedSlice = data.slice(0, bytesTaken);
+        chunks.push(consumedSlice);
         totalBytes += bytesTaken;
         totalLines += linesSeen;
       }
       hitLimit = true;
+    }
+
+    if (consumedSlice && onChunk) {
+      const text = consumedSlice.toString("utf8");
+      if (text.length > 0) {
+        onChunk(text);
+      }
     }
   });
 

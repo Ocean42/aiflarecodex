@@ -11,6 +11,7 @@ import type {
   Tool,
 } from "openai/resources/responses/responses.mjs";
 import type { Reasoning } from "openai/resources.mjs";
+import type { ExecStreamChunk } from "./sandbox/interface.js";
 
 import { CLI_VERSION } from "../../version.js";
 import {
@@ -31,7 +32,16 @@ import {
   setCurrentModel,
   setSessionId,
 } from "../session.js";
-import { handleExecCommand } from "./handle-exec-command.js";
+import {
+  handleExecCommand,
+  type CommandApprovalEvent,
+} from "./handle-exec-command.js";
+import {
+  formatPlanUpdate,
+  parsePlanUpdateArgs,
+} from "./plan-utils.js";
+import { notifyTurnComplete } from "../turn-notifier.js";
+import { runApplyPatchTool } from "./apply-patch-tool.js";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -47,8 +57,8 @@ import {
   promptToResponsesTurn,
   type Prompt,
 } from "../../backend/prompt.js";
-import { getCodexBackendBaseUrl } from "../../backend/auth.js";
-import { loadAuthDotJsonSync } from "../../backend/authModel.js";
+import { BackendCredentials } from "../../backend/backend-credentials.js";
+import { httpManager } from "../http-manager.js";
 
 // Wait time before retrying after rate limit errors (ms).
 const RATE_LIMIT_RETRY_WAIT_MS = parseInt(
@@ -101,6 +111,7 @@ type AgentLoopParams = {
     applyPatch: ApplyPatchCommand | undefined,
   ) => Promise<CommandConfirmation>;
   onLastResponseId: (lastResponseId: string) => void;
+  onCommandApproval?: (event: CommandApprovalEvent) => void;
 };
 
 const shellFunctionTool: FunctionTool = {
@@ -295,11 +306,9 @@ const builtInFunctionTools: Array<Tool> = [
 ];
 
 const stubbedToolNames = new Set([
-  "apply_patch",
   "list_mcp_resources",
   "list_mcp_resource_templates",
   "read_mcp_resource",
-  "update_plan",
   "view_image",
 ]);
 
@@ -349,6 +358,8 @@ export class AgentLoop {
   private canceled = false;
   /** Token usage for the most recently completed response, if available. */
   private lastTokenUsage: TokenUsage | null = null;
+  /** Monotonically increasing counter for synthesized exec chunk events. */
+  private execChunkSeq = 0;
 
   /**
    * Local conversation transcript used when `disableResponseStorage === true`. Holds
@@ -367,6 +378,7 @@ export class AgentLoop {
   private terminated = false;
   /** Master abort controller – fires when terminate() is invoked. */
   private readonly hardAbort = new AbortController();
+  private onCommandApproval?: (event: CommandApprovalEvent) => void;
 
 
   /**
@@ -438,6 +450,33 @@ export class AgentLoop {
     log(`AgentLoop.cancel(): generation bumped to ${this.generation}`);
   }
 
+  private emitExecChunk(callId: string, chunk: ExecStreamChunk): void {
+    if (!chunk.text) {
+      return;
+    }
+    const item: ResponseItem = {
+      id: `exec-chunk-${callId}-${++this.execChunkSeq}`,
+      type: "message",
+      role: "tool",
+      content: [
+        {
+          type: "output_text",
+          text: chunk.text,
+        },
+      ],
+      metadata: {
+        source: "exec",
+        stream: chunk.stream,
+        call_id: callId,
+      } as Record<string, unknown>,
+    } as ResponseItem;
+    try {
+      this.onItem(item);
+    } catch {
+      /* non-fatal */
+    }
+  }
+
   /**
    * Hard‑stop the agent loop. After calling this method the instance becomes
    * unusable: any in‑flight operations are aborted and subsequent invocations
@@ -484,6 +523,7 @@ export class AgentLoop {
     getCommandConfirmation,
     onLastResponseId,
     additionalWritableRoots,
+    onCommandApproval,
   }: AgentLoopParams & { config?: AppConfig }) {
     this.model = model;
     this.provider = provider;
@@ -504,6 +544,7 @@ export class AgentLoop {
     this.onLoading = onLoading;
     this.getCommandConfirmation = getCommandConfirmation;
     this.onLastResponseId = onLastResponseId;
+    this.onCommandApproval = onCommandApproval;
 
     this.disableResponseStorage = disableResponseStorage ?? false;
     this.sessionId = getSessionId() || randomUUID().replaceAll("-", "");
@@ -526,17 +567,15 @@ export class AgentLoop {
     let chatgptAccountId: string | undefined;
     if (this.provider.toLowerCase() === "openai") {
       try {
-        const auth = loadAuthDotJsonSync();
-        const tokens = auth?.tokens;
-        if (tokens && tokens.accessToken && tokens.idToken.rawJwt) {
-          baseURL = getCodexBackendBaseUrl();
-          apiKey = tokens.accessToken;
-          this.baseUrl = baseURL;
-          chatgptAccountId =
-            tokens.accountId ?? tokens.idToken.chatgptAccountId ?? undefined;
-        }
-      } catch {
-        // Ignore errors reading auth – fall back to API-key flow.
+        const codexCreds = BackendCredentials.ensure();
+        baseURL = codexCreds.codexBaseUrl;
+        apiKey = codexCreds.accessToken;
+        this.baseUrl = baseURL;
+        chatgptAccountId = codexCreds.chatgptAccountId;
+      } catch (err) {
+        throw new Error(
+          `Unable to load Codex backend credentials: ${(err as Error).message}`,
+        );
       }
     }
     this.chatgptAccountId = chatgptAccountId;
@@ -575,6 +614,7 @@ export class AgentLoop {
           : {}),
       },
       httpAgent: PROXY_URL ? new HttpsProxyAgent(PROXY_URL) : undefined,
+      fetch: httpManager.fetch.bind(httpManager),
       ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
     });
 
@@ -595,6 +635,7 @@ export class AgentLoop {
             : {}),
         },
         httpAgent: PROXY_URL ? new HttpsProxyAgent(PROXY_URL) : undefined,
+        fetch: httpManager.fetch.bind(httpManager),
         ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
       });
     }
@@ -704,11 +745,68 @@ export class AgentLoop {
         this.additionalWritableRoots,
         this.getCommandConfirmation,
         this.execAbortController?.signal,
+        {
+          callId,
+          onChunk: (chunk) => this.emitExecChunk(callId, chunk),
+          onApproval: this.onCommandApproval
+            ? (event) => this.onCommandApproval?.(event)
+            : undefined,
+        },
       );
       outputItem.output = JSON.stringify({ output: outputText, metadata });
 
       if (additionalItemsFromExec) {
         additionalItems.push(...additionalItemsFromExec);
+      }
+    } else if (name === "apply_patch") {
+      const patch = typeof (args as Record<string, unknown>)?.patch === "string"
+        ? (args as Record<string, unknown>).patch
+        : undefined;
+      if (!patch) {
+        outputItem.output = JSON.stringify({
+          error: "apply_patch tool missing `patch` argument",
+        });
+      } else {
+        const workdir =
+          typeof (args as Record<string, unknown>)?.workdir === "string"
+            ? ((args as Record<string, unknown>).workdir as string)
+            : undefined;
+        const result = runApplyPatchTool({ patch, workdir });
+        outputItem.output = JSON.stringify({
+          output: result.output,
+          metadata: result.metadata,
+        });
+        if (result.exitCode !== 0 && result.stderr) {
+          additionalItems.push({
+            type: "message",
+            role: "system",
+            content: [
+              {
+                type: "input_text",
+                text: `apply_patch stderr:\n${result.stderr}`,
+              },
+            ],
+          });
+        }
+      }
+    } else if (name && stubbedToolNames.has(name)) {
+    } else if (name === "update_plan") {
+      const parsed = parsePlanUpdateArgs(args);
+      if ("error" in parsed) {
+        outputItem.output = JSON.stringify({ error: parsed.error });
+      } else {
+        outputItem.output = JSON.stringify({ status: "ok" });
+        additionalItems.push({
+          id: `plan-${Date.now()}`,
+          type: "message",
+          role: "assistant",
+          content: [
+            {
+              type: "output_text",
+              text: formatPlanUpdate(parsed),
+            },
+          ],
+        } as ResponseItem);
       }
     } else if (name && stubbedToolNames.has(name)) {
       outputItem.output = JSON.stringify({
@@ -733,11 +831,12 @@ export class AgentLoop {
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const callId: string = item.call_id ?? randomUUID();
     const outputItem: any = {
       type: "local_shell_call_output",
       // `call_id` is mandatory – ensure we never send `undefined` which would
       // trigger the "No tool output found…" 400 from the API.
-      call_id: item.call_id,
+      call_id: callId,
       output: "no function found",
     };
 
@@ -773,10 +872,17 @@ export class AgentLoop {
       args,
       this.config,
       this.approvalPolicy,
-      this.additionalWritableRoots,
-      this.getCommandConfirmation,
-      this.execAbortController?.signal,
-    );
+        this.additionalWritableRoots,
+        this.getCommandConfirmation,
+        this.execAbortController?.signal,
+        {
+          callId,
+          onChunk: (chunk) => this.emitExecChunk(callId, chunk),
+          onApproval: this.onCommandApproval
+            ? (event) => this.onCommandApproval?.(event)
+            : undefined,
+        },
+      );
     outputItem.output = JSON.stringify({ output: outputText, metadata });
 
     if (additionalItemsFromExec) {
@@ -1769,6 +1875,13 @@ export class AgentLoop {
         //     },
         //   ],
         // });
+
+        notifyTurnComplete(this.config, {
+          type: "agent-turn-complete",
+          turnId: randomUUID(),
+          sessionId: this.sessionId,
+          label: this.label,
+        });
 
         this.onLoading(false);
       };
