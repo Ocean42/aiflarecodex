@@ -9,8 +9,13 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "node dist/bin/run-cli-worker.js",
-    "test:unit": "echo 'cli-worker unit tests pending'"
+    "test:unit": "vitest run"
   },
-  "dependencies": {},
-  "devDependencies": {}
+  "dependencies": {
+    "@aiflare/protocol": "file:../protocol"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "vitest": "^1.6.0"
+  }
 }

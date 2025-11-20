@@ -11,9 +11,20 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "node dist/bin/start-backend.js",
-    "test:unit": "echo 'backend unit tests pending'",
+    "test:unit": "vitest run",
     "test:integration": "echo 'backend integration tests pending'"
   },
-  "dependencies": {},
-  "devDependencies": {}
+  "dependencies": {
+    "@aiflare/protocol": "file:../protocol",
+    "cors": "^2.8.5",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.0.0",
+    "@types/cors": "^2.8.17",
+    "@types/supertest": "^6.0.3",
+    "supertest": "^6.3.4",
+    "vitest": "^1.6.1"
+  }
 }
