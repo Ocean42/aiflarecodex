@@ -14,6 +14,7 @@ export default defineConfig({
   use: {
     baseURL,
     trace: "on-first-retry",
+    video: (process.env["PLAYWRIGHT_VIDEO"] as "on" | "off" | "retain-on-failure" | undefined) ?? "retain-on-failure",
   },
   globalSetup: path.join(__dirname, "tests/e2e/global-setup.ts"),
 });
