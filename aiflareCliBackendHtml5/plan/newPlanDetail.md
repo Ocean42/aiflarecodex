@@ -25,7 +25,7 @@ Die folgenden Schritte sind so sortiert, dass jede Ausbaustufe testbar bleibt. A
    - Nutzt dieselben Config-Lader wie `aiflare/src/cli.tsx` (AppConfig, PromptTemplates). Runner erhält Workdir, Model, Credentials exakt wie der CLI-Client – inklusive echter `auth.json` + ENV.
    - Backend lädt Auth-Daten lokal; CLI-Worker wird nur noch benötigt, wenn Tools laufen müssen.
    - Jede Session trägt ihr eigenes `workdir`; Runner führt AgentLoop mit diesem Pfad aus, damit Dateibezüge stimmen.
-3. [ ] **Tool-Bridge in AgentLoop**
+3. [x] **Tool-Bridge in AgentLoop**
    - AgentLoop bietet Hooks für `function_call`s. Wir führen ein `ToolExecutor`-Interface ein (z. B. `execute(invocation): Promise<ToolOutput>`), das zunächst eine einfache In-Memory-Implementierung für Tests bereitstellt (z. B. sammelt Aufrufe und antwortet deterministisch), später aber durch eine echte CLI-basierten Implementierung ersetzt wird.
    - Schrittfolge:
      1. **Testexecutor:** Minimaler Executor (nur in Testumgebung genutzt) liefert synchrone Antworten, damit AgentLoop/SessionRunner-Infrastruktur getestet werden kann.
@@ -36,7 +36,7 @@ Die folgenden Schritte sind so sortiert, dass jede Ausbaustufe testbar bleibt. A
    - **Tests:** Vitest-Service-Test mit echtem AgentLoop (über Testexecutor) prüft Queue → AgentLoop-Aufrufe sowie SessionState-Mutationen. Nach Umstellung auf CLI-Executor werden dieselben Tests gegen den realen Worker gefahren (nur skippen, wenn CLI nicht verfügbar). Integrationstest (REST) nutzt reale Credentials (`auth.json`/ENV).
 
 ## 3. Backend-APIs & Streaming
-1. [ ] **REST**
+1. [x] **REST**
    - `POST /api/sessions/:id/messages` legt Nachricht in SessionState, triggert Runner → Response wird asynchron geliefert. Endpoint gibt 202 + current transcript-Version zurück, kein synchrones Reply-String mehr.
    - `GET /api/sessions/:id/transcript` liefert kompletten Transcript + Status + laufende Tool-Infos.
    - `GET /api/sessions/:id/deltas?since=<cursor>` (oder WebSocket) streamt nur Änderungen; nutzt ActiveSessionRegistry zur Filterung.

@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { log } from "../../logger/log.js";
 import { adaptCommandForPlatform } from "../platform-commands.js";
-import { createTruncatingCollector } from "./create-truncating-collector";
+import { createTruncatingCollector } from "./create-truncating-collector.js";
 import { spawn } from "child_process";
 import * as os from "os";
 /**

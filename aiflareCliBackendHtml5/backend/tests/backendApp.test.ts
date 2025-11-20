@@ -12,7 +12,11 @@ describe("BackendApp routes", () => {
 
   beforeAll(async () => {
     sessionDir = mkdtempSync(join(tmpdir(), "backend-app-test-"));
-    app = createBackendApp({ port: 0, sessionStoreDir: sessionDir });
+    app = createBackendApp({
+      port: 0,
+      sessionStoreDir: sessionDir,
+      forceLegacyAgent: true,
+    });
     app.start();
     const addr = (app as unknown as { server: { address(): { port: number } } }).server.address();
     serverUrl = `http://localhost:${addr.port}`;
@@ -23,61 +27,64 @@ describe("BackendApp routes", () => {
     rmSync(sessionDir, { recursive: true, force: true });
   });
 
-  it("returns health info", async () => {
-    const response = await request(serverUrl).get("/api/health");
+  it("returns bootstrap info", async () => {
+    const response = await request(serverUrl).get("/api/bootstrap");
     expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({ ok: true, clis: 0, sessions: 0 });
+    expect(response.body).toMatchObject({
+      clis: [],
+      sessions: [],
+      transcripts: {},
+    });
   });
 
   it("registers CLI and lists them", async () => {
-    const label = "test-cli";
     const registerRes = await request(serverUrl)
       .post("/api/clis/register")
-      .send({ cliId: "cli_test", label });
+      .send({ cliId: "cli_test", label: "Test CLI" });
     expect(registerRes.status).toBe(200);
 
     const listRes = await request(serverUrl).get("/api/clis");
+    expect(listRes.status).toBe(200);
     expect(listRes.body.clis).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ id: "cli_test", label, status: "connected" }),
+        expect.objectContaining({ id: "cli_test", label: "Test CLI" }),
       ]),
     );
   });
 
-  it("creates session and enqueues actions", async () => {
-    await request(serverUrl).post("/api/clis/register").send({ cliId: "cli_session" });
+  it("creates session, handles messages and exposes transcripts", async () => {
     const createRes = await request(serverUrl)
       .post("/api/sessions")
-      .send({ cliId: "cli_session", workdir: "/tmp", model: "gpt-test" });
+      .send({ cliId: "cli_test", workdir: "/tmp", model: "gpt-test" });
     expect(createRes.status).toBe(201);
     const { sessionId } = createRes.body;
 
     const sessionsRes = await request(serverUrl).get("/api/sessions");
     expect(sessionsRes.body.sessions).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ id: sessionId, cliId: "cli_session", status: "waiting" }),
+        expect.objectContaining({ id: sessionId, cliId: "cli_test", status: "waiting" }),
       ]),
     );
 
-    const actionsRes = await request(serverUrl).get("/api/actions");
-    expect(actionsRes.body.actions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ sessionId, payload: expect.objectContaining({ type: "run_command" }) }),
-        expect.objectContaining({ sessionId, payload: expect.objectContaining({ type: "noop" }) }),
-      ]),
-    );
-  });
+    const messageRes = await request(serverUrl)
+      .post(`/api/sessions/${sessionId}/messages`)
+      .send({ content: "hi ai antworte mir bitte mit hallo" });
+    expect(messageRes.status).toBe(200);
+    expect(messageRes.body.reply).toBe("Hallo");
+    expect(messageRes.body.messages).toHaveLength(2);
 
-  it("returns session history", async () => {
-    await request(serverUrl).post("/api/clis/register").send({ cliId: "cli_hist" });
-    const createRes = await request(serverUrl)
-      .post("/api/sessions")
-      .send({ cliId: "cli_hist" });
-    const { sessionId } = createRes.body;
+    const messagesRes = await request(serverUrl).get(`/api/sessions/${sessionId}/messages`);
+    expect(messagesRes.body.messages).toHaveLength(2);
 
     const historyRes = await request(serverUrl).get(`/api/sessions/${sessionId}/history`);
-    expect(historyRes.status).toBe(200);
-    expect(historyRes.body.history.length).toBeGreaterThan(0);
-    expect(historyRes.body.history[0]).toMatchObject({ event: "created" });
+    expect(historyRes.body.history).toEqual(
+      expect.arrayContaining([expect.objectContaining({ event: "created" })]),
+    );
+
+    const bootstrapAfter = await request(serverUrl).get("/api/bootstrap");
+    expect(bootstrapAfter.body.sessions).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: sessionId })]),
+    );
+    expect(bootstrapAfter.body.transcripts[sessionId]).toHaveLength(2);
   });
 });
