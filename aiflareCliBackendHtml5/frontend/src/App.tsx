@@ -1,5 +1,10 @@
 import { useEffect, useRef } from "react";
-import type { CliSummary, SessionId, SessionSummary } from "@aiflare/protocol";
+import type {
+  CliSummary,
+  SessionId,
+  SessionSummary,
+  SessionMessage,
+} from "@aiflare/protocol";
 import { ProtoClient } from "./api/protoClient.js";
 import { useLocalState } from "./hooks/useLocalState.js";
 import { appState } from "./state/appState.js";
@@ -11,10 +16,12 @@ import { AuthPanel } from "./components/AuthPanel.js";
 import { SessionWindow } from "./components/SessionWindow.js";
 import { LogPanel, type LogEntry } from "./components/LogPanel.js";
 import type { AuthStatus } from "./types/auth.js";
+import { SessionNavigator } from "./components/SessionNavigator.js";
 
 type AppViewModel = {
   clis: Array<CliSummary>;
   sessions: Array<SessionSummary>;
+  sessionMessages: Map<SessionId, Array<SessionMessage>>;
   form: SessionForm;
   logs: Array<LogEntry>;
   auth: AuthStatus | null;
@@ -60,6 +67,7 @@ export function App(): JSX.Element {
     const vm: AppViewModel = Object.assign(self, {
       clis: [],
       sessions: [],
+      sessionMessages: new Map<SessionId, Array<SessionMessage>>(),
       form: {
         cliId: "",
         workdir: "/tmp",
@@ -71,6 +79,7 @@ export function App(): JSX.Element {
       sync() {
         vm.clis = Array.from(appState.clis.values());
         vm.sessions = Array.from(appState.sessions.values());
+        vm.sessionMessages = new Map(appState.sessionMessages);
         vm.activeSessionId = appState.activeSessionId;
       },
       addLog(message: string) {
@@ -230,11 +239,14 @@ export function App(): JSX.Element {
           <SessionFormSection
             form={view.form}
             clis={view.clis}
-            sessions={view.sessions}
-            activeSessionId={view.activeSessionId}
             onFormChange={(field, value) => view.handleFormChange(field, value)}
             onCreate={() => void view.handleCreateSession()}
-            onSelectSession={(sessionId) => void view.handleSelectSession(sessionId)}
+          />
+          <SessionNavigator
+            sessions={view.sessions}
+            activeSessionId={view.activeSessionId}
+            messagesBySession={view.sessionMessages}
+            onSelect={(sessionId) => void view.handleSelectSession(sessionId)}
           />
         </div>
         <div className="session-window-panel">

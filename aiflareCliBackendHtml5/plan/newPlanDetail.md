@@ -71,7 +71,7 @@ Die folgenden Schritte sind so sortiert, dass jede Ausbaustufe testbar bleibt. A
    - Anzeige basiert auf delta-updates, Input disabled, solange Session kein Runner hat oder Tool ausführt.
    - Message-Komponenten unterscheiden User, Assistant, Tool (z. B. Badges, spinner bei streaming).
    - **Tests:** React Testing Library (Jest DOM). Komponente bekommt Fake-ProtoClient + Mock-AppState. Test sendet simulierte SSE-Events (per helper) und erwartet, dass DOM sofort aktualisiert wird. Axe-Check optional.
-3. **SessionNavigator**
+3. [x] **SessionNavigator**
    - Separate Komponente mit Status-Badges (`running`, `waiting`, `tool`). Zeigt letzte Message-Vorschau (aus SessionState).
    - Klick ruft `appState.setActiveSession`, kein zusätzlicher REST-Call nötig, weil Transcript bereits im Store liegt; falls nicht, ProtoClient lädt verpasste Deltas seit Cursor.
    - **Tests:** RTL-Interaktionstest. Rendert `SessionNavigator` mit Dummy-Sessions, triggert Klick via `fireEvent.click`, verifiziert Badge-Text (z. B. „RUNNING“) und dass Callback genau einmal feuert.
