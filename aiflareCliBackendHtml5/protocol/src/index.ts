@@ -6,7 +6,8 @@ export type BackendToCliAction =
   | AttachSessionAction
   | DetachSessionAction
   | RunCommandAction
-  | ApplyPatchAction;
+  | ApplyPatchAction
+  | AgentToolCallAction;
 
 export interface BackendToCliActionBase {
   actionId: string;
@@ -35,6 +36,16 @@ export interface ApplyPatchAction extends BackendToCliActionBase {
   type: "apply_patch";
   patch: string;
   workdir: string;
+}
+
+export interface AgentToolCallAction extends BackendToCliActionBase {
+  type: "agent_tool_call";
+  cliId: CliId;
+  invocation: {
+    name: string;
+    args: unknown;
+    callId: string;
+  };
 }
 
 export type CliToBackendEvent =
@@ -76,6 +87,7 @@ export interface SessionSummary {
   workdir: string;
   status: "waiting" | "running" | "error" | "completed";
   lastUpdated: string;
+  title?: string;
 }
 
 export interface CliSummary {
@@ -84,6 +96,14 @@ export interface CliSummary {
   status: "connected" | "disconnected";
   lastSeen: string;
   sessionCount: number;
+}
+
+export interface SessionMessage {
+  id: string;
+  sessionId: SessionId;
+  role: "user" | "assistant" | "system";
+  content: string;
+  timestamp: string;
 }
 
 export type FrontendDelta =
@@ -122,3 +142,15 @@ export type FrontendCommand =
       approved: boolean;
       explanation?: string;
     };
+
+export interface BootstrapState {
+  clis: Array<CliSummary>;
+  sessions: Array<SessionSummary>;
+  actions: Array<{
+    actionId: string;
+    cliId: CliId;
+    sessionId?: SessionId;
+    payload: unknown;
+  }>;
+  transcripts: Record<SessionId, Array<SessionMessage>>;
+}

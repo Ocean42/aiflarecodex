@@ -43,6 +43,23 @@ export async function waitForSessionViaApi(request: APIRequestContext): Promise<
   throw new Error("Session not created in time");
 }
 
+export async function waitForSessionCount(
+  request: APIRequestContext,
+  expectedCount: number,
+): Promise<Array<{ id: string }>> {
+  const timeoutMs = 15_000;
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const res = await request.get(`${BACKEND_URL}/api/sessions`);
+    const data = await res.json();
+    if (Array.isArray(data?.sessions) && data.sessions.length >= expectedCount) {
+      return data.sessions;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  throw new Error(`Expected ${expectedCount} sessions, but not ready in time`);
+}
+
 export async function pollForNoActions(request: APIRequestContext): Promise<void> {
   const timeoutMs = 15_000;
   const start = Date.now();

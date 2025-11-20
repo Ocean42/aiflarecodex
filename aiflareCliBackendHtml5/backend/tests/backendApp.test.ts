@@ -1,13 +1,18 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import request from "supertest";
 import { createBackendApp, BackendApp } from "../src/backendApp.js";
 
 describe("BackendApp routes", () => {
   let app: BackendApp;
   let serverUrl: string;
+  let sessionDir: string;
 
   beforeAll(async () => {
-    app = createBackendApp({ port: 0 });
+    sessionDir = mkdtempSync(join(tmpdir(), "backend-app-test-"));
+    app = createBackendApp({ port: 0, sessionStoreDir: sessionDir });
     app.start();
     const addr = (app as unknown as { server: { address(): { port: number } } }).server.address();
     serverUrl = `http://localhost:${addr.port}`;
@@ -15,6 +20,7 @@ describe("BackendApp routes", () => {
 
   afterAll(() => {
     app.stop();
+    rmSync(sessionDir, { recursive: true, force: true });
   });
 
   it("returns health info", async () => {

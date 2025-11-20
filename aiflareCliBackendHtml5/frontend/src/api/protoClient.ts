@@ -1,27 +1,33 @@
-import type { CliSummary, SessionSummary } from "@aiflare/protocol";
+import type {
+  BootstrapState,
+  CliSummary,
+  SessionId,
+  SessionMessage,
+  SessionSummary,
+} from "@aiflare/protocol";
 import type { AuthStatus } from "../types/auth.js";
+
+export type SessionEventPayload =
+  | {
+      type: "session_messages_appended";
+      sessionId: SessionId;
+      messages: Array<SessionMessage>;
+    }
+  | {
+      type: "session_summary_updated";
+      sessionId: SessionId;
+      summary: SessionSummary;
+    };
 
 export class ProtoClient {
   constructor(private readonly baseUrl: string) {}
 
-  async fetchBootstrap(): Promise<{
-    clis: Array<CliSummary>;
-    sessions: Array<SessionSummary>;
-    actions: Array<{ actionId: string; sessionId?: string; payload: unknown; cliId: string }>;
-  }> {
-    const [clisResp, sessionsResp, actionsResp] = await Promise.all([
-      fetch(new URL("/api/clis", this.baseUrl)),
-      fetch(new URL("/api/sessions", this.baseUrl)),
-      fetch(new URL("/api/actions", this.baseUrl)),
-    ]);
-    if (!clisResp.ok || !sessionsResp.ok || !actionsResp.ok) {
+  async fetchBootstrap(): Promise<BootstrapState> {
+    const response = await fetch(new URL("/api/bootstrap", this.baseUrl));
+    if (!response.ok) {
       throw new Error("Failed to fetch bootstrap data");
     }
-    return {
-      clis: (await clisResp.json()).clis,
-      sessions: (await sessionsResp.json()).sessions,
-      actions: (await actionsResp.json()).actions,
-    };
+    return response.json();
   }
 
   async pairCli(): Promise<{ cliId: string; token: string }> {
@@ -62,6 +68,31 @@ export class ProtoClient {
     return response.json();
   }
 
+  async fetchSessionMessages(sessionId: SessionId): Promise<Array<SessionMessage>> {
+    const response = await fetch(
+      new URL(`/api/sessions/${sessionId}/messages`, this.baseUrl),
+    );
+    if (!response.ok) {
+      throw new Error("Failed to load session messages");
+    }
+    return (await response.json()).messages;
+  }
+
+  async sendSessionMessage(
+    sessionId: SessionId,
+    content: string,
+  ): Promise<{ reply: string; messages: Array<SessionMessage> }> {
+    const response = await fetch(new URL(`/api/sessions/${sessionId}/messages`, this.baseUrl), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content }),
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to send message for session ${sessionId}`);
+    }
+    return response.json();
+  }
+
   async fetchSessionHistory(sessionId: string): Promise<
     Array<{ timestamp: string; event: string; data?: unknown }>
   > {
@@ -72,6 +103,25 @@ export class ProtoClient {
       throw new Error(`Failed to load history for session ${sessionId}`);
     }
     return (await response.json()).history;
+  }
+
+  subscribeSessionEvents(onEvent: (event: SessionEventPayload) => void): () => void {
+    const url = new URL("/api/session-events", this.baseUrl);
+    const source = new EventSource(url.toString());
+    source.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data) as SessionEventPayload;
+        onEvent(payload);
+      } catch (error) {
+        console.error("[proto-client] failed to parse session event", error);
+      }
+    };
+    source.onerror = (event) => {
+      console.warn("[proto-client] session event stream error", event);
+    };
+    return () => {
+      source.close();
+    };
   }
 
   async fetchAuthStatus(): Promise<AuthStatus> {

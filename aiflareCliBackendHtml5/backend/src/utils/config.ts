@@ -1,0 +1,455 @@
+// @ts-nocheck
+// NOTE: We intentionally point the TypeScript import at the source file
+// (`./auto-approval-mode.ts`) instead of the emitted `.js` bundle.  This makes
+// the module resolvable when the project is executed via `ts-node`, which
+// resolves *source* paths rather than built artefacts.  During a production
+// build the TypeScript compiler will automatically rewrite the path to
+// `./auto-approval-mode.js`, so the change is completely transparent for the
+// compiled `dist/` output used by the published CLI.
+import { AutoApprovalMode } from "./auto-approval-mode.js";
+import { getCodexHomeDir } from "./codexHome.js";
+import { log } from "./logger/log.js";
+import { providers } from "./providers.js";
+import { InstructionsManager } from "./instructionsManager.js";
+import { config as loadDotenv } from "dotenv";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { load as loadYaml, dump as dumpYaml } from "js-yaml";
+import { homedir } from "os";
+import { dirname, join, extname, resolve as resolvePath } from "path";
+import { loadAuthDotJsonSync } from "../backend/authModel.js";
+import { parseMcpServers } from "./mcp/config.js";
+// ---------------------------------------------------------------------------
+// User‑wide environment config (~/.codey.env)
+// ---------------------------------------------------------------------------
+// Load a user‑level dotenv file **after** process.env and any project‑local
+// .env file (loaded via "dotenv/config" in cli.tsx) are in place.  We rely on
+// dotenv's default behaviour of *not* overriding existing variables so that
+// the precedence order becomes:
+//   1. Explicit environment variables
+//   2. Project‑local .env (handled in cli.tsx)
+//   3. User‑wide ~/.codey.env (loaded here)
+// This guarantees that users can still override the global key on a per‑project
+// basis while enjoying the convenience of a persistent default.
+// Skip when running inside Vitest to avoid interfering with the FS mocks used
+// by tests that stub out `fs` *after* importing this module.
+const USER_WIDE_CONFIG_PATH = join(homedir(), ".codey.env");
+const isVitest = typeof globalThis.vitest !== "undefined";
+if (!isVitest) {
+    loadDotenv({ path: USER_WIDE_CONFIG_PATH });
+}
+export const DEFAULT_AGENTIC_MODEL = "gpt-5.1-codex";
+export const DEFAULT_FULL_CONTEXT_MODEL = "gpt-4.1";
+export const DEFAULT_APPROVAL_MODE = AutoApprovalMode.SUGGEST;
+// Default shell output limits
+export const DEFAULT_SHELL_MAX_BYTES = 1024 * 10; // 10 KB
+export const DEFAULT_SHELL_MAX_LINES = 256;
+export const CONFIG_DIR = getCodexHomeDir();
+export const CONFIG_JSON_FILEPATH = join(CONFIG_DIR, "config.json");
+export const CONFIG_YAML_FILEPATH = join(CONFIG_DIR, "config.yaml");
+export const CONFIG_YML_FILEPATH = join(CONFIG_DIR, "config.yml");
+// Keep the original constant name for backward compatibility, but point it at
+// the default JSON path. Code that relies on this constant will continue to
+// work unchanged.
+export const CONFIG_FILEPATH = CONFIG_JSON_FILEPATH;
+export const INSTRUCTIONS_FILEPATH = join(CONFIG_DIR, "instructions.md");
+export const OPENAI_TIMEOUT_MS = parseInt(process.env["OPENAI_TIMEOUT_MS"] || "0", 10) || undefined;
+export const OPENAI_BASE_URL = process.env["OPENAI_BASE_URL"] || "";
+export let OPENAI_API_KEY = process.env["OPENAI_API_KEY"] || "";
+export const AZURE_OPENAI_API_VERSION = process.env["AZURE_OPENAI_API_VERSION"] || "2025-04-01-preview";
+export const DEFAULT_REASONING_EFFORT = "medium";
+export const OPENAI_ORGANIZATION = process.env["OPENAI_ORGANIZATION"] || "";
+export const OPENAI_PROJECT = process.env["OPENAI_PROJECT"] || "";
+// Can be set `true` when Codex is running in an environment that is marked as already
+// considered sufficiently locked-down so that we allow running without an explicit sandbox.
+export const CODEX_UNSAFE_ALLOW_NO_SANDBOX = Boolean(process.env["CODEX_UNSAFE_ALLOW_NO_SANDBOX"] || "");
+export function setApiKey(apiKey) {
+    OPENAI_API_KEY = apiKey;
+}
+export function getBaseUrl(provider = "openai") {
+    // Check for a PROVIDER-specific override: e.g. OPENAI_BASE_URL or OLLAMA_BASE_URL.
+    const envKey = `${provider.toUpperCase()}_BASE_URL`;
+    if (process.env[envKey]) {
+        return process.env[envKey];
+    }
+    // Get providers config from config file.
+    const config = loadConfig();
+    const providersConfig = config.providers ?? providers;
+    const providerInfo = providersConfig[provider.toLowerCase()];
+    if (providerInfo) {
+        return providerInfo.baseURL;
+    }
+    // If the provider not found in the providers list and `OPENAI_BASE_URL` is set, use it.
+    if (OPENAI_BASE_URL !== "") {
+        return OPENAI_BASE_URL;
+    }
+    // We tried.
+    return undefined;
+}
+export function getApiKey(provider = "openai") {
+    const config = loadConfig();
+    const providersConfig = config.providers ?? providers;
+    const providerInfo = providersConfig[provider.toLowerCase()];
+    if (providerInfo) {
+        if (providerInfo.name === "Ollama") {
+            return process.env[providerInfo.envKey] ?? "dummy";
+        }
+        const envKey = providerInfo.envKey;
+        const envValue = process.env[envKey];
+        if (envValue && envValue.trim() !== "") {
+            if (provider.toLowerCase() === "openai" || envKey === "OPENAI_API_KEY") {
+                setApiKey(envValue.trim());
+            }
+            return envValue;
+        }
+        // For the OpenAI provider, fall back to the auth.json-managed API key
+        // when no explicit environment variable is configured. This mirrors the
+        // CLI behaviour where a ChatGPT login persists the key for reuse.
+        if (provider.toLowerCase() === "openai" || envKey === "OPENAI_API_KEY") {
+            const auth = loadAuthDotJsonSync();
+            if (auth?.OPENAI_API_KEY && auth.OPENAI_API_KEY.trim() !== "") {
+                const key = auth.OPENAI_API_KEY.trim();
+                setApiKey(key);
+                process.env["OPENAI_API_KEY"] ||= key;
+                return key;
+            }
+        }
+        return undefined;
+    }
+    // Checking `PROVIDER_API_KEY` feels more intuitive with a custom provider.
+    const customApiKey = process.env[`${provider.toUpperCase()}_API_KEY`];
+    if (customApiKey) {
+        return customApiKey;
+    }
+    if (provider.toLowerCase() === "openai") {
+        const auth = loadAuthDotJsonSync();
+        if (auth?.OPENAI_API_KEY && auth.OPENAI_API_KEY.trim() !== "") {
+            return auth.OPENAI_API_KEY.trim();
+        }
+    }
+    // If the provider not found in the providers list and `OPENAI_API_KEY` is set, use it
+    if (OPENAI_API_KEY !== "") {
+        return OPENAI_API_KEY;
+    }
+    // We tried.
+    return undefined;
+}
+// Minimal config written on first run.  An *empty* model string ensures that
+// we always fall back to DEFAULT_MODEL on load, so updates to the default keep
+// propagating to existing users until they explicitly set a model.
+export const EMPTY_STORED_CONFIG = { model: "" };
+// Pre‑stringified JSON variant so we don't stringify repeatedly.
+const EMPTY_CONFIG_JSON = JSON.stringify(EMPTY_STORED_CONFIG, null, 2) + "\n";
+// Formatting (quiet mode-only).
+export const PRETTY_PRINT = Boolean(process.env["PRETTY_PRINT"] || "");
+// ---------------------------------------------------------------------------
+// Project doc support (AGENTS.md / codex.md)
+// ---------------------------------------------------------------------------
+export const PROJECT_DOC_MAX_BYTES = 32 * 1024; // 32 kB
+// We support multiple filenames for project-level agent instructions. The
+// recommended convention is to use `AGENTS.md`, however we keep the legacy
+// `codex.md` variants for backwards-compatibility so that existing
+// repositories continue to work without changes. The list is ordered so that
+// the first match wins – newer conventions first, older fallbacks later.
+const PROJECT_DOC_FILENAMES = [
+    "AGENTS.md", // preferred
+    "codex.md", // legacy
+    ".codex.md",
+    "CODEX.md",
+];
+const PROJECT_DOC_SEPARATOR = "\n\n--- project-doc ---\n\n";
+export function discoverProjectDocPath(startDir) {
+    const cwd = resolvePath(startDir);
+    // 1) Look in the explicit CWD first:
+    for (const name of PROJECT_DOC_FILENAMES) {
+        const direct = join(cwd, name);
+        if (existsSync(direct)) {
+            return direct;
+        }
+    }
+    // 2) Fallback: walk up to the Git root and look there.
+    let dir = cwd;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+        const gitPath = join(dir, ".git");
+        if (existsSync(gitPath)) {
+            // Once we hit the Git root, search its top‑level for the doc
+            for (const name of PROJECT_DOC_FILENAMES) {
+                const candidate = join(dir, name);
+                if (existsSync(candidate)) {
+                    return candidate;
+                }
+            }
+            // If Git root but no doc, stop looking.
+            return null;
+        }
+        const parent = dirname(dir);
+        if (parent === dir) {
+            // Reached filesystem root without finding Git.
+            return null;
+        }
+        dir = parent;
+    }
+}
+/**
+ * Load the project documentation markdown (`AGENTS.md` – or the legacy
+ * `codex.md`) if present. If the file
+ * exceeds {@link PROJECT_DOC_MAX_BYTES} it will be truncated and a warning is
+ * logged.
+ *
+ * @param cwd The current working directory of the caller
+ * @param explicitPath If provided, skips discovery and loads the given path
+ */
+export function loadProjectDoc(cwd, explicitPath) {
+    let filepath = null;
+    if (explicitPath) {
+        filepath = resolvePath(cwd, explicitPath);
+        if (!existsSync(filepath)) {
+            // eslint-disable-next-line no-console
+            console.warn(`codex: project doc not found at ${filepath}`);
+            filepath = null;
+        }
+    }
+    else {
+        filepath = discoverProjectDocPath(cwd);
+    }
+    if (!filepath) {
+        return "";
+    }
+    try {
+        const buf = readFileSync(filepath);
+        if (buf.byteLength > PROJECT_DOC_MAX_BYTES) {
+            // eslint-disable-next-line no-console
+            console.warn(`codex: project doc '${filepath}' exceeds ${PROJECT_DOC_MAX_BYTES} bytes – truncating.`);
+        }
+        return buf.slice(0, PROJECT_DOC_MAX_BYTES).toString("utf-8");
+    }
+    catch {
+        return "";
+    }
+}
+export const loadConfig = (configPath = CONFIG_FILEPATH, instructionsPath = INSTRUCTIONS_FILEPATH, options = {}) => {
+    // Determine the actual path to load. If the provided path doesn't exist and
+    // the caller passed the default JSON path, automatically fall back to YAML
+    // variants.
+    let actualConfigPath = configPath;
+    if (!existsSync(actualConfigPath)) {
+        if (configPath === CONFIG_FILEPATH) {
+            if (existsSync(CONFIG_YAML_FILEPATH)) {
+                actualConfigPath = CONFIG_YAML_FILEPATH;
+            }
+            else if (existsSync(CONFIG_YML_FILEPATH)) {
+                actualConfigPath = CONFIG_YML_FILEPATH;
+            }
+        }
+    }
+    let storedConfig = {};
+    if (existsSync(actualConfigPath)) {
+        const raw = readFileSync(actualConfigPath, "utf-8");
+        const ext = extname(actualConfigPath).toLowerCase();
+        try {
+            if (ext === ".yaml" || ext === ".yml") {
+                storedConfig = loadYaml(raw);
+            }
+            else {
+                storedConfig = JSON.parse(raw);
+            }
+        }
+        catch {
+            // If parsing fails, fall back to empty config to avoid crashing.
+            storedConfig = {};
+        }
+    }
+    if (storedConfig.disableResponseStorage !== undefined &&
+        typeof storedConfig.disableResponseStorage !== "boolean") {
+        if (storedConfig.disableResponseStorage === "true") {
+            storedConfig.disableResponseStorage = true;
+        }
+        else if (storedConfig.disableResponseStorage === "false") {
+            storedConfig.disableResponseStorage = false;
+        }
+        else {
+            log(`[codex] Warning: 'disableResponseStorage' in config is not a boolean (got '${storedConfig.disableResponseStorage}'). Ignoring this value.`);
+            delete storedConfig.disableResponseStorage;
+        }
+    }
+    const instructionsFilePathResolved = instructionsPath
+        ? resolvePath(instructionsPath)
+        : INSTRUCTIONS_FILEPATH;
+    const userInstructions = InstructionsManager.getDefaultInstructions();
+    const cwd = options.cwd ?? process.cwd();
+    const projectDoc = options.disableProjectDoc === true
+        ? ""
+        : loadProjectDoc(cwd, options.projectDocPath);
+    const combinedInstructions = projectDoc && projectDoc.trim() !== ""
+        ? `${userInstructions}${PROJECT_DOC_SEPARATOR}${projectDoc}`
+        : userInstructions;
+    // Treat empty string ("" or whitespace) as absence so we can fall back to
+    // the latest DEFAULT_MODEL.
+    const storedModel = storedConfig.model && storedConfig.model.trim() !== ""
+        ? storedConfig.model.trim()
+        : undefined;
+    const config = {
+        model: storedModel ??
+            (options.isFullContext
+                ? DEFAULT_FULL_CONTEXT_MODEL
+                : DEFAULT_AGENTIC_MODEL),
+        provider: storedConfig.provider,
+        instructions: combinedInstructions,
+        notify: storedConfig.notify === true,
+        approvalMode: storedConfig.approvalMode,
+        tools: {
+            shell: {
+                maxBytes: storedConfig.tools?.shell?.maxBytes ?? DEFAULT_SHELL_MAX_BYTES,
+                maxLines: storedConfig.tools?.shell?.maxLines ?? DEFAULT_SHELL_MAX_LINES,
+            },
+        },
+        disableResponseStorage: storedConfig.disableResponseStorage === true,
+        reasoningEffort: storedConfig.reasoningEffort,
+        fileOpener: storedConfig.fileOpener,
+    };
+    // -----------------------------------------------------------------------
+    // First‑run bootstrap: if the configuration file (and/or its containing
+    // directory) didn't exist we create them now so that users end up with a
+    // materialised ~/.codex/config.json file on first execution.  This mirrors
+    // what `saveConfig()` would do but without requiring callers to remember to
+    // invoke it separately.
+    //
+    // We intentionally perform this *after* we have computed the final
+    // `config` object so that we can just persist the resolved defaults.  The
+    // write operations are guarded by `existsSync` checks so that subsequent
+    // runs that already have a config will remain read‑only here.
+    // -----------------------------------------------------------------------
+    try {
+        if (!existsSync(actualConfigPath)) {
+            // Ensure the directory exists first.
+            const dir = dirname(actualConfigPath);
+            if (!existsSync(dir)) {
+                mkdirSync(dir, { recursive: true });
+            }
+            // Persist a minimal config – we include the `model` key but leave it as
+            // an empty string so that `loadConfig()` treats it as "unset" and falls
+            // back to whatever DEFAULT_MODEL is current at runtime.  This prevents
+            // pinning users to an old default after upgrading Codex.
+            const ext = extname(actualConfigPath).toLowerCase();
+            if (ext === ".yaml" || ext === ".yml") {
+                writeFileSync(actualConfigPath, dumpYaml(EMPTY_STORED_CONFIG), "utf-8");
+            }
+            else {
+                writeFileSync(actualConfigPath, EMPTY_CONFIG_JSON, "utf-8");
+            }
+        }
+        // Always ensure the instructions file exists so users can edit it.
+        if (!existsSync(instructionsFilePathResolved)) {
+            const instrDir = dirname(instructionsFilePathResolved);
+            if (!existsSync(instrDir)) {
+                mkdirSync(instrDir, { recursive: true });
+            }
+            writeFileSync(instructionsFilePathResolved, userInstructions, "utf-8");
+        }
+    }
+    catch {
+        // Silently ignore any errors – failure to persist the defaults shouldn't
+        // block the CLI from starting.  A future explicit `codex config` command
+        // or `saveConfig()` call can handle (re‑)writing later.
+    }
+    // Only include the "memory" key if it was explicitly set by the user. This
+    // preserves backward‑compatibility with older config files (and our test
+    // fixtures) that don't include a "memory" section.
+    if (storedConfig.memory !== undefined) {
+        config.memory = storedConfig.memory;
+    }
+    if (storedConfig.fullAutoErrorMode) {
+        config.fullAutoErrorMode = storedConfig.fullAutoErrorMode;
+    }
+    // Notification setting: enable desktop notifications when set in config
+    config.notify = storedConfig.notify === true;
+    config.notifyCommand = Array.isArray(storedConfig.notifyCommand)
+        ? storedConfig.notifyCommand
+        : undefined;
+    // Flex-mode setting: enable the flex-mode service tier when set in config
+    if (storedConfig.flexMode !== undefined) {
+        config.flexMode = storedConfig.flexMode;
+    }
+    // Add default history config if not provided
+    if (storedConfig.history !== undefined) {
+        config.history = {
+            maxSize: storedConfig.history.maxSize ?? 1000,
+            saveHistory: storedConfig.history.saveHistory ?? true,
+            sensitivePatterns: storedConfig.history.sensitivePatterns ?? [],
+        };
+    }
+    else {
+        config.history = {
+            maxSize: 1000,
+            saveHistory: true,
+            sensitivePatterns: [],
+        };
+    }
+    // Merge default providers with user configured providers in the config.
+    config.providers = { ...providers, ...storedConfig.providers };
+    const rawMcpServers = storedConfig.mcp_servers ??
+        storedConfig.mcpServers;
+    config.mcpServers = parseMcpServers(rawMcpServers && typeof rawMcpServers === "object"
+        ? rawMcpServers
+        : undefined);
+    config.experimentalUseRmcpClient =
+        storedConfig.experimentalUseRmcpClient === true ||
+            Boolean(storedConfig
+                .experimental_use_rmcp_client);
+    return config;
+};
+export const saveConfig = (config, configPath = CONFIG_FILEPATH, instructionsPath = INSTRUCTIONS_FILEPATH) => {
+    // If the caller passed the default JSON path *and* a YAML config already
+    // exists on disk, save back to that YAML file instead to preserve the
+    // user's chosen format.
+    let targetPath = configPath;
+    if (configPath === CONFIG_FILEPATH &&
+        !existsSync(configPath) &&
+        (existsSync(CONFIG_YAML_FILEPATH) || existsSync(CONFIG_YML_FILEPATH))) {
+        targetPath = existsSync(CONFIG_YAML_FILEPATH)
+            ? CONFIG_YAML_FILEPATH
+            : CONFIG_YML_FILEPATH;
+    }
+    const dir = dirname(targetPath);
+    if (!existsSync(dir)) {
+        mkdirSync(dir, { recursive: true });
+    }
+    const ext = extname(targetPath).toLowerCase();
+    // Create the config object to save
+    const configToSave = {
+        model: config.model,
+        provider: config.provider,
+        providers: config.providers,
+        approvalMode: config.approvalMode,
+        disableResponseStorage: config.disableResponseStorage,
+        flexMode: config.flexMode,
+        reasoningEffort: config.reasoningEffort,
+    };
+    // Add history settings if they exist
+    if (config.history) {
+        configToSave.history = {
+            maxSize: config.history.maxSize,
+            saveHistory: config.history.saveHistory,
+            sensitivePatterns: config.history.sensitivePatterns,
+        };
+    }
+    // Add tools settings if they exist
+    if (config.tools) {
+        configToSave.tools = {
+            shell: config.tools.shell
+                ? {
+                    maxBytes: config.tools.shell.maxBytes,
+                    maxLines: config.tools.shell.maxLines,
+                }
+                : undefined,
+        };
+    }
+    if (ext === ".yaml" || ext === ".yml") {
+        writeFileSync(targetPath, dumpYaml(configToSave), "utf-8");
+    }
+    else {
+        writeFileSync(targetPath, JSON.stringify(configToSave, null, 2), "utf-8");
+    }
+    // Take everything before the first PROJECT_DOC_SEPARATOR (or the whole string if none).
+    writeFileSync(instructionsPath, InstructionsManager.getDefaultInstructions(), "utf-8");
+};

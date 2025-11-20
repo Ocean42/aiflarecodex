@@ -103,4 +103,22 @@ export class BackendClient {
       throw new Error(`Failed to cancel login (${response.status})`);
     }
   }
+
+  async submitToolResult(
+    sessionId: string,
+    callId: string,
+    outputs: Array<unknown>,
+  ): Promise<void> {
+    const response = await fetch(
+      new URL(`/api/clis/${this.cliId}/tool-results`, this.baseUrl),
+      {
+        method: "POST",
+        headers: this.authHeaders({ "content-type": "application/json" }),
+        body: JSON.stringify({ sessionId, callId, outputs }),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(`Failed to submit tool result (${response.status})`);
+    }
+  }
 }

@@ -157,6 +157,9 @@ export class CliWorkerApp {
         });
         await this.runCommandAction(payload);
         break;
+      case "agent_tool_call":
+        await this.handleAgentToolAction(payload);
+        break;
       case "login_request":
         await this.handleLoginRequest();
         break;
@@ -175,9 +178,111 @@ export class CliWorkerApp {
       console.warn("[cli-worker] run_command missing command payload");
       return;
     }
-    await new Promise<void>((resolve) => {
+    const result = await this.spawnCommand(
+      command,
+      payload.workdir && payload.workdir.length > 0 ? payload.workdir : process.cwd(),
+    );
+    console.log("[cli-worker] run_command finished", {
+      command,
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    });
+  }
+
+  private async handleAgentToolAction(payload: {
+    invocation?: {
+      name?: string;
+      args?: unknown;
+      callId?: string;
+    };
+    sessionId?: string;
+  }): Promise<void> {
+    if (!this.backendClient) {
+      console.warn("[cli-worker] no backend client for tool call");
+      return;
+    }
+    const invocation = payload.invocation;
+    const sessionId = payload.sessionId;
+    if (!invocation || !sessionId) {
+      console.warn("[cli-worker] invalid agent_tool_call payload", payload);
+      return;
+    }
+    const callId = invocation.callId ?? `call_${Date.now()}`;
+    try {
+      let outputs: Array<{ call_id: string; type: string; output: string }>;
+      switch (invocation.name) {
+        case "shell":
+        case "local_shell_call":
+          outputs = await this.executeShellTool(invocation, callId);
+          break;
+        default:
+          outputs = [
+            {
+              type: "function_call_output",
+              call_id: callId,
+              output: JSON.stringify({
+                error: `Unsupported tool ${invocation.name}`,
+              }),
+            },
+          ];
+          break;
+      }
+      await this.backendClient.submitToolResult(sessionId, callId, outputs);
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      await this.backendClient.submitToolResult(sessionId, callId, [
+        {
+          type: "function_call_output",
+          call_id: callId,
+          output: JSON.stringify({ error: errorMessage }),
+        },
+      ]);
+    }
+  }
+
+  private async executeShellTool(
+    invocation: { args?: unknown },
+    callId: string,
+  ): Promise<Array<{ call_id: string; type: string; output: string }>> {
+    const execInput = invocation.args as
+      | { cmd?: Array<string>; workdir?: string }
+      | undefined;
+    const command = execInput?.cmd ?? [];
+    if (command.length === 0) {
+      throw new Error("shell tool missing command");
+    }
+    const workdir =
+      execInput?.workdir && execInput.workdir.length > 0
+        ? execInput.workdir
+        : process.cwd();
+    const startedAt = Date.now();
+    const { stdout, stderr, exitCode } = await this.spawnCommand(command, workdir);
+    const durationSeconds = (Date.now() - startedAt) / 1000;
+    return [
+      {
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify({
+          output: stdout,
+          metadata: {
+            exit_code: exitCode ?? 0,
+            duration_seconds: durationSeconds,
+            stderr,
+          },
+        }),
+      },
+    ];
+  }
+
+  private async spawnCommand(
+    command: Array<string>,
+    workdir: string,
+  ): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
+    return await new Promise((resolve) => {
       const child = spawn(command[0]!, command.slice(1), {
-        cwd: payload.workdir && payload.workdir.length > 0 ? payload.workdir : process.cwd(),
+        cwd: workdir,
         stdio: ["ignore", "pipe", "pipe"],
       });
       let stdout = "";
@@ -189,13 +294,7 @@ export class CliWorkerApp {
         stderr += chunk.toString();
       });
       child.on("close", (code) => {
-        console.log("[cli-worker] run_command finished", {
-          command,
-          exitCode: code,
-          stdout: stdout.trim(),
-          stderr: stderr.trim(),
-        });
-        resolve();
+        resolve({ stdout: stdout.trim(), stderr: stderr.trim(), exitCode: code });
       });
     });
   }

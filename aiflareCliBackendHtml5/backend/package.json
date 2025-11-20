@@ -18,12 +18,18 @@
     "@aiflare/protocol": "file:../protocol",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "file-type": "^20.1.0",
+    "https-proxy-agent": "^7.0.6",
+    "openai": "^4.95.1",
+    "shell-quote": "^1.8.2"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.0.0",
+    "@types/shell-quote": "^1.7.5",
     "@types/supertest": "^6.0.3",
     "supertest": "^6.3.4",
     "vitest": "^1.6.1"

@@ -1,0 +1,53 @@
+{
+  "summary": {
+    "id": "sess_c7d0df85-46d9-4ce5-a304-2d23acd018bc",
+    "cliId": "cli_session",
+    "model": "gpt-test",
+    "workdir": "/tmp",
+    "status": "waiting",
+    "lastUpdated": "2025-11-20T20:40:54.212Z",
+    "title": "Session 3"
+  },
+  "messages": [],
+  "events": [
+    {
+      "timestamp": "2025-11-20T20:40:54.212Z",
+      "event": "created",
+      "data": {
+        "cliId": "cli_session",
+        "workdir": "/tmp",
+        "model": "gpt-test"
+      }
+    },
+    {
+      "timestamp": "2025-11-20T20:40:54.212Z",
+      "event": "action_enqueued",
+      "data": {
+        "actionId": "act_40b0bf18-62d1-4769-8934-c01d335a422c",
+        "payload": {
+          "type": "noop",
+          "sessionId": "sess_c7d0df85-46d9-4ce5-a304-2d23acd018bc",
+          "workdir": "/tmp"
+        }
+      }
+    },
+    {
+      "timestamp": "2025-11-20T20:40:54.212Z",
+      "event": "action_enqueued",
+      "data": {
+        "actionId": "act_c201339b-881f-4b2d-addc-e624b5f7fd86",
+        "payload": {
+          "type": "run_command",
+          "sessionId": "sess_c7d0df85-46d9-4ce5-a304-2d23acd018bc",
+          "workdir": "/tmp",
+          "command": [
+            "echo",
+            "hello from backend"
+          ]
+        }
+      }
+    }
+  ],
+  "pendingUserMessages": [],
+  "agentItems": []
+}

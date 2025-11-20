@@ -1,0 +1,53 @@
+{
+  "summary": {
+    "id": "sess_a0012f6b-e1d7-4508-a9b2-53375d10925d",
+    "cliId": "cli_hist",
+    "model": "gpt-4.1-mini",
+    "workdir": "/Volumes/devdisk/dev/ai-guard/aiflarecodex/aiflareCliBackendHtml5/backend",
+    "status": "waiting",
+    "lastUpdated": "2025-11-20T20:40:54.230Z",
+    "title": "Session 4"
+  },
+  "messages": [],
+  "events": [
+    {
+      "timestamp": "2025-11-20T20:40:54.230Z",
+      "event": "created",
+      "data": {
+        "cliId": "cli_hist",
+        "workdir": "/Volumes/devdisk/dev/ai-guard/aiflarecodex/aiflareCliBackendHtml5/backend",
+        "model": "gpt-4.1-mini"
+      }
+    },
+    {
+      "timestamp": "2025-11-20T20:40:54.230Z",
+      "event": "action_enqueued",
+      "data": {
+        "actionId": "act_0b9ae5d4-6cc1-4c9e-b012-c1e907775309",
+        "payload": {
+          "type": "noop",
+          "sessionId": "sess_a0012f6b-e1d7-4508-a9b2-53375d10925d",
+          "workdir": "/Volumes/devdisk/dev/ai-guard/aiflarecodex/aiflareCliBackendHtml5/backend"
+        }
+      }
+    },
+    {
+      "timestamp": "2025-11-20T20:40:54.230Z",
+      "event": "action_enqueued",
+      "data": {
+        "actionId": "act_9e4dcea6-1668-4daa-b859-1a9fe6863fd5",
+        "payload": {
+          "type": "run_command",
+          "sessionId": "sess_a0012f6b-e1d7-4508-a9b2-53375d10925d",
+          "workdir": "/Volumes/devdisk/dev/ai-guard/aiflarecodex/aiflareCliBackendHtml5/backend",
+          "command": [
+            "echo",
+            "hello from backend"
+          ]
+        }
+      }
+    }
+  ],
+  "pendingUserMessages": [],
+  "agentItems": []
+}

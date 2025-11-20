@@ -1,4 +1,4 @@
-import type { CliSummary, SessionSummary } from "@aiflare/protocol";
+import type { CliSummary, SessionId, SessionSummary } from "@aiflare/protocol";
 
 export type SessionForm = {
   cliId: string;
@@ -10,18 +10,20 @@ type Props = {
   form: SessionForm;
   clis: Array<CliSummary>;
   sessions: Array<SessionSummary>;
+  activeSessionId: SessionId | null;
   onFormChange(field: keyof SessionForm, value: string): void;
   onCreate(): void;
-  onLoadHistory(sessionId: string): void;
+  onSelectSession(sessionId: SessionId): void;
 };
 
 export function SessionFormSection({
   form,
   clis,
   sessions,
+  activeSessionId,
   onFormChange,
   onCreate,
-  onLoadHistory,
+  onSelectSession,
 }: Props): JSX.Element {
   return (
     <section aria-label="Sessions">
@@ -63,13 +65,21 @@ export function SessionFormSection({
       </button>
       <ul data-testid="session-list">
         {sessions.map((session) => (
-          <li key={session.id}>
-            <button type="button" onClick={() => onLoadHistory(session.id)}>
+          <li
+            key={session.id}
+            data-active={session.id === activeSessionId}
+            className={session.id === activeSessionId ? "active-session" : ""}
+          >
+            <button
+              type="button"
+              data-testid={`session-select-${session.id}`}
+              onClick={() => onSelectSession(session.id)}
+            >
               <strong className={`status-${session.status}`}>
-                {session.status.toUpperCase()}
+                {session.title ?? session.id}
               </strong>
             </button>{" "}
-            – {session.id} → {session.cliId} [{session.model}]
+            – {session.cliId} [{session.model}]
           </li>
         ))}
       </ul>
