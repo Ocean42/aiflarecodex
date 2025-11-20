@@ -1,0 +1,16 @@
+{
+  "name": "@aiflare/cli-worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "aiflare-cli-worker": "dist/bin/run-cli-worker.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "node dist/bin/run-cli-worker.js",
+    "test:unit": "echo 'cli-worker unit tests pending'"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

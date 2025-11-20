@@ -1,0 +1,27 @@
+{
+  "name": "aiflare-cli-backend-html5",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "backend",
+    "cli-worker",
+    "frontend",
+    "protocol"
+  ],
+  "scripts": {
+    "build": "npm run build:protocol && npm run build:backend && npm run build:cli && npm run build:frontend",
+    "build:protocol": "npm --workspace protocol run build",
+    "build:backend": "npm --workspace backend run build",
+    "build:cli": "npm --workspace cli-worker run build",
+    "build:frontend": "npm --workspace frontend run build",
+    "dev:backend": "npm --workspace backend run dev",
+    "dev:cli": "npm --workspace cli-worker run dev",
+    "dev:frontend": "npm --workspace frontend run dev",
+    "test:unit": "npm --workspace backend run test:unit && npm --workspace cli-worker run test:unit",
+    "test:integration": "npm --workspace backend run test:integration",
+    "e2e": "npm --workspace frontend run e2e"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}

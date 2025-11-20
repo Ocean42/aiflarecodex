@@ -1,0 +1,19 @@
+{
+  "name": "@aiflare/backend",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "aiflare-backend": "dist/bin/start-backend.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "node dist/bin/start-backend.js",
+    "test:unit": "echo 'backend unit tests pending'",
+    "test:integration": "echo 'backend integration tests pending'"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
