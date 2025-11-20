@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
@@ -15,6 +15,28 @@ const backendPort = Number(process.env["E2E_BACKEND_PORT"] ?? "4123");
 const frontendPort = Number(process.env["E2E_FRONTEND_PORT"] ?? "5174");
 const backendUrl = process.env["E2E_BACKEND_URL"] ?? `http://127.0.0.1:${backendPort}`;
 const frontendUrl = process.env["E2E_FRONTEND_URL"] ?? `http://127.0.0.1:${frontendPort}`;
+
+function killPort(port: number): void {
+  try {
+    const result = spawnSync("lsof", ["-ti", `:${port}`], { encoding: "utf-8" });
+    if (result.error || !result.stdout) {
+      return;
+    }
+    const pids = result.stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    for (const pid of pids) {
+      try {
+        process.kill(Number(pid), "SIGKILL");
+      } catch {
+        // ignore if the process already exited
+      }
+    }
+  } catch {
+    // lsof may not be available on all systems; ignore best-effort failures
+  }
+}
 
 function waitForHttp(url: string, timeoutMs = 10_000): Promise<void> {
   const start = Date.now();
@@ -43,6 +65,9 @@ function waitForHttp(url: string, timeoutMs = 10_000): Promise<void> {
 }
 
 export default async function globalSetup(): Promise<() => void> {
+  killPort(backendPort);
+  killPort(frontendPort);
+
   const backend = spawn("node", [backendScript], {
     env: { ...process.env, BACKEND_PORT: String(backendPort) },
     stdio: "inherit",

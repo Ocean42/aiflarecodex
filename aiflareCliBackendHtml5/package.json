@@ -12,7 +12,7 @@
     "dev": "npm run build && npm-run-all --parallel start:backend start:cli start:frontend",
     "start:backend": "(lsof -ti:4310 | xargs kill -9 >/dev/null 2>&1 || true) && BACKEND_PORT=4310 npm --workspace backend run dev",
     "start:cli": "npx wait-on http://127.0.0.1:4310/api/health && BACKEND_URL=http://127.0.0.1:4310 npm --workspace cli-worker run dev",
-    "start:frontend": "(lsof -ti:5173 | xargs kill -9 >/dev/null 2>&1 || true) && npm --workspace frontend run dev",
+    "start:frontend": "(lsof -ti:5177 | xargs kill -9 >/dev/null 2>&1 || true) && npm --workspace frontend run dev",
     "build": "npm run build:protocol && npm run build:backend && npm run build:cli && npm run build:frontend",
     "build:protocol": "npm --workspace protocol run build",
     "build:backend": "npm --workspace backend run build",

@@ -87,3 +87,7 @@ CHANGELOG.ignore.md
 .envrc
 /aiflare/log
 /aiflare/log
+aiflareCliBackendHtml5/frontend/tmp/auth-state.json
+aiflareCliBackendHtml5/tmp/cli-e2e-config.json
+/aiflareCliBackendHtml5/tmp
+/aiflareCliBackendHtml5/frontend/test-results
