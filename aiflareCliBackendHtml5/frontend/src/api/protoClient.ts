@@ -1,4 +1,5 @@
 import type { CliSummary, SessionSummary } from "@aiflare/protocol";
+import type { AuthStatus } from "../types/auth.js";
 
 export class ProtoClient {
   constructor(private readonly baseUrl: string) {}
@@ -71,5 +72,38 @@ export class ProtoClient {
       throw new Error(`Failed to load history for session ${sessionId}`);
     }
     return (await response.json()).history;
+  }
+
+  async fetchAuthStatus(): Promise<AuthStatus> {
+    const response = await fetch(new URL("/api/auth/status", this.baseUrl));
+    if (!response.ok) {
+      throw new Error("Failed to fetch auth status");
+    }
+    return response.json();
+  }
+
+  async requestLogin(cliId: string): Promise<void> {
+    const response = await fetch(new URL("/api/auth/login", this.baseUrl), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cliId }),
+    });
+    if (!response.ok) {
+      const message = await response.text();
+      throw new Error(
+        response.status === 409
+          ? "Login already pending for this CLI"
+          : `Failed to start login (${message || response.status})`,
+      );
+    }
+  }
+
+  async logout(): Promise<void> {
+    const response = await fetch(new URL("/api/auth/logout", this.baseUrl), {
+      method: "POST",
+    });
+    if (!response.ok) {
+      throw new Error("Failed to logout");
+    }
   }
 }

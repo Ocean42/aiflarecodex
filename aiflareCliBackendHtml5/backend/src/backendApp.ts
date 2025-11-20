@@ -8,6 +8,13 @@ import type {
   SessionId,
   SessionSummary,
 } from "@aiflare/protocol";
+import {
+  getAuthStatus,
+  initializeAuthState,
+  logoutAuthState,
+} from "./services/authState.js";
+import { logToFile } from "./services/logWriter.js";
+import { persistAuthData } from "./services/authStorage.js";
 
 export interface BackendAppOptions {
   port?: number;
@@ -25,10 +32,15 @@ export class BackendApp {
     cliId: CliId;
     sessionId?: SessionId;
     payload: unknown;
+    delivered: boolean;
   }> = [];
+  private readonly logFile = process.env["BACKEND_LOG_FILE"] ?? "backend.log";
+  private readonly pendingLoginClis = new Set<CliId>();
 
   constructor(options?: BackendAppOptions) {
+    initializeAuthState();
     this.port = options?.port ?? Number(process.env["BACKEND_PORT"] ?? "4123");
+    this.log("BackendApp initialized", { port: this.port });
   }
 
   start(): void {
@@ -57,6 +69,87 @@ export class BackendApp {
         clis: this.clis.size,
         sessions: this.sessions.size,
       });
+    });
+
+    app.get("/api/auth/status", (_req, res) => {
+      this.log("GET /api/auth/status");
+      const status = getAuthStatus();
+      const pendingLogins = Array.from(this.pendingLoginClis).map((cliId) => ({
+        cliId,
+      }));
+      res.json({ ...status, pendingLogins });
+    });
+
+    app.post("/api/auth/login", async (req, res) => {
+      this.log("POST /api/auth/login");
+      const cliId = req.body?.cliId as CliId | undefined;
+      if (!cliId) {
+        res.status(400).json({ error: "missing_cli_id" });
+        return;
+      }
+      if (!this.clis.has(cliId)) {
+        res.status(404).json({ error: "cli_not_found" });
+        return;
+      }
+      if (this.pendingLoginClis.has(cliId)) {
+        res.status(409).json({ error: "login_pending" });
+        return;
+      }
+      this.pendingLoginClis.add(cliId);
+      this.enqueueAction(cliId, {
+        type: "login_request",
+      });
+      this.log("Enqueued login_request action", { cliId });
+      res.json({ ok: true });
+    });
+
+    app.post("/api/auth/logout", async (_req, res) => {
+      this.log("POST /api/auth/logout");
+      try {
+        await logoutAuthState();
+        this.pendingLoginClis.clear();
+        res.json({ ok: true });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : String(error);
+        res.status(500).json({ error: "logout_failed", message });
+      }
+    });
+
+    app.post("/api/clis/:cliId/auth", async (req, res) => {
+      const cliId = req.params["cliId"] as CliId;
+      const summary = this.validateCliToken(cliId, req);
+      if (!summary) {
+        res.status(401).json({ error: "unauthorized" });
+        return;
+      }
+      const authData = req.body?.authData;
+      if (!authData || typeof authData !== "object") {
+        res.status(400).json({ error: "invalid_auth_data" });
+        return;
+      }
+      try {
+        await persistAuthData(authData);
+        this.pendingLoginClis.delete(cliId);
+        this.log("Auth data uploaded by CLI", { cliId });
+        res.json({ ok: true });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.log("Failed to persist auth data", { cliId, error: message });
+        res.status(500).json({ error: "auth_persist_failed", message });
+      }
+    });
+
+    app.post("/api/clis/:cliId/auth/cancel", (req, res) => {
+      const cliId = req.params["cliId"] as CliId;
+      const summary = this.validateCliToken(cliId, req);
+      if (!summary) {
+        res.status(401).json({ error: "unauthorized" });
+        return;
+      }
+      this.pendingLoginClis.delete(cliId);
+      this.log("Login flow canceled by CLI", { cliId });
+      res.json({ ok: true });
     });
 
     app.get("/api/clis", (_req, res) => {
@@ -174,28 +267,49 @@ export class BackendApp {
 
     app.get("/api/clis/:cliId/actions", (req, res) => {
       const cliId = req.params["cliId"] as CliId;
-      const actions = this.actionQueue.filter((action) => action.cliId === cliId);
-      actions.forEach((action) => {
-        if (action.sessionId) {
-          const session = this.sessions.get(action.sessionId);
-          if (session) {
-            session.status = "running";
-            session.lastUpdated = new Date().toISOString();
+      const summary = this.validateCliToken(cliId, req);
+      if (!summary) {
+        res.status(401).json({ error: "unauthorized" });
+        return;
+      }
+    const actions = this.actionQueue.filter(
+      (action) => action.cliId === cliId && !action.delivered,
+    );
+    actions.forEach((action) => {
+      action.delivered = true;
+      if (action.sessionId) {
+        const session = this.sessions.get(action.sessionId);
+        if (session) {
+          session.status = "running";
+          session.lastUpdated = new Date().toISOString();
           }
         }
       });
+      if (actions.length > 0) {
+        this.log("Delivering actions to CLI", { cliId, count: actions.length });
+      }
       res.json({ actions });
     });
 
     app.post("/api/clis/:cliId/actions/:actionId/ack", (req, res) => {
       const cliId = req.params["cliId"] as CliId;
+      const summary = this.validateCliToken(cliId, req);
+      if (!summary) {
+        res.status(401).json({ error: "unauthorized" });
+        return;
+      }
       const actionId = req.params["actionId"];
       const actionIndex = this.actionQueue.findIndex(
         (action) => action.cliId === cliId && action.actionId === actionId,
       );
       if (actionIndex >= 0) {
         const action = this.actionQueue[actionIndex];
-        this.actionQueue.splice(actionIndex, 1);
+      this.actionQueue.splice(actionIndex, 1);
+        this.log("Action acknowledged", {
+          cliId,
+          actionId,
+          type: (action.payload as { type?: string })?.type ?? "unknown",
+        });
         if (action.sessionId) {
           const session = this.sessions.get(action.sessionId);
           if (session) {
@@ -232,6 +346,12 @@ export class BackendApp {
       cliId,
       sessionId,
       payload,
+      delivered: false,
+    });
+    this.log("Action queued", {
+      cliId,
+      actionId,
+      type: (payload as { type?: string })?.type ?? "unknown",
     });
     if (sessionId) {
       this.appendSessionEvent(sessionId, "action_enqueued", { actionId, payload });
@@ -246,6 +366,19 @@ export class BackendApp {
     const events = this.sessionHistory.get(sessionId) ?? [];
     events.push({ timestamp: new Date().toISOString(), event, data });
     this.sessionHistory.set(sessionId, events);
+  }
+
+  private validateCliToken(cliId: CliId, req: express.Request): (CliSummary & { token: string }) | null {
+    const token = req.header("x-cli-token") || "";
+    const summary = this.clis.get(cliId);
+    if (!summary || summary.token !== token) {
+      return null;
+    }
+    return summary;
+  }
+
+  private log(message: string, extra?: unknown): void {
+    logToFile(this.logFile, "[backend]", message, extra);
   }
 }
 

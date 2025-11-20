@@ -12,7 +12,9 @@
     "test:unit": "vitest run"
   },
   "dependencies": {
-    "@aiflare/protocol": "file:../protocol"
+    "@aiflare/protocol": "file:../protocol",
+    "express": "^4.21.2",
+    "open": "^9.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

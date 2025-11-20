@@ -12,6 +12,8 @@ import { PendingActionsSection } from "./components/PendingActionsSection.js";
 import { SessionHistorySection } from "./components/SessionHistorySection.js";
 import { LogPanel, type LogEntry } from "./components/LogPanel.js";
 import { StatsSummary } from "./components/StatsSummary.js";
+import { AuthPanel } from "./components/AuthPanel.js";
+import type { AuthStatus } from "./types/auth.js";
 
 type AppViewModel = {
   cliCount: number;
@@ -22,6 +24,7 @@ type AppViewModel = {
   form: SessionForm;
   history: Array<{ timestamp: string; event: string; data?: unknown }>;
   logs: Array<LogEntry>;
+  auth: AuthStatus | null;
   sync(): void;
   handlePairCli(): Promise<void>;
   handleEnqueueAction(): Promise<void>;
@@ -30,6 +33,9 @@ type AppViewModel = {
   loadHistory(sessionId: string): Promise<void>;
   addLog(message: string): void;
   refreshBackend(): Promise<void>;
+  refreshAuthStatus(): Promise<void>;
+  handleLogin(cliId: string): Promise<void>;
+  handleLogout(): Promise<void>;
 };
 
 function resolveBackendUrl(): string {
@@ -68,6 +74,7 @@ export function App(): JSX.Element {
       },
       history: [],
       logs: [],
+      auth: null,
       sync() {
         vm.clis = Array.from(appState.clis.values());
         vm.sessions = Array.from(appState.sessions.values());
@@ -126,6 +133,54 @@ export function App(): JSX.Element {
         vm.history = history;
         reRender();
       },
+      async refreshAuthStatus() {
+        try {
+          console.log("[frontend] fetching auth status...");
+          const status = await client.fetchAuthStatus();
+          vm.auth = status;
+          vm.addLog(`[auth] status=${status.status}`);
+        } catch (error) {
+          console.error("[frontend] auth status fetch failed", error);
+          vm.addLog("[auth] status fetch failed");
+        } finally {
+          reRender();
+        }
+      },
+      async handleLogin(cliId: string) {
+        if (!cliId) {
+          alert("Select a CLI before requesting login.");
+          return;
+        }
+        try {
+          console.log("[frontend] requesting login link via CLI", cliId);
+          await client.requestLogin(cliId);
+          vm.addLog(`[auth] login link sent to ${cliId}`);
+        } catch (error) {
+          console.error("[frontend] login flow failed", error);
+          vm.addLog("[auth] login link generation failed");
+          alert(
+            error instanceof Error
+              ? error.message
+              : "Failed to start Codex login. Check logs for details.",
+          );
+        }
+        void vm.refreshAuthStatus();
+        reRender();
+      },
+      async handleLogout() {
+        try {
+          console.log("[frontend] logging out of Codex...");
+          await client.logout();
+          vm.addLog("[auth] logged out");
+          alert("Logged out of Codex. Local auth.json removed.");
+        } catch (error) {
+          console.error("[frontend] logout failed", error);
+          vm.addLog("[auth] logout failed");
+          alert("Failed to log out of Codex. Check logs for details.");
+        }
+        void vm.refreshAuthStatus();
+        reRender();
+      },
       refreshBackend: async () => {
         await refreshFromBackend();
       },
@@ -150,6 +205,7 @@ export function App(): JSX.Element {
 
     vm.sync();
     void vm.refreshBackend();
+    void vm.refreshAuthStatus();
 
     return vm;
   });
@@ -157,6 +213,7 @@ export function App(): JSX.Element {
   useEffect(() => {
     const timer = setInterval(() => {
       void view.refreshBackend();
+      void view.refreshAuthStatus();
     }, 5000);
     return () => clearInterval(timer);
   }, [view]);
@@ -165,6 +222,13 @@ export function App(): JSX.Element {
     <main>
       <h1>Aiflare Frontend</h1>
       <StatsSummary cliCount={view.cliCount} sessionCount={view.sessionCount} />
+      <AuthPanel
+        status={view.auth}
+        clis={view.clis}
+        pendingLogins={view.auth?.pendingLogins ?? []}
+        onLogin={(cliId) => view.handleLogin(cliId)}
+        onLogout={() => view.handleLogout()}
+      />
       <CliSection
         clis={view.clis}
         onPair={() => void view.handlePairCli()}

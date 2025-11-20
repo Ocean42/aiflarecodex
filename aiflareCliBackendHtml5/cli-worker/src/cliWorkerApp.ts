@@ -3,6 +3,8 @@ import os from "node:os";
 import { spawn } from "node:child_process";
 import { ConfigStore, type CliWorkerConfig } from "./config/configStore.js";
 import { BackendClient } from "./net/backendClient.js";
+import { runLocalCodexLogin } from "./login/localLogin.js";
+import { ActionTracker } from "./utils/actionTracker.js";
 
 export interface CliWorkerAppOptions {
   configStore?: ConfigStore;
@@ -14,6 +16,7 @@ export class CliWorkerApp {
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private actionPollingTimer: NodeJS.Timeout | null = null;
   private currentConfig: CliWorkerConfig | null = null;
+  private readonly actionTracker = new ActionTracker();
 
   constructor(options?: CliWorkerAppOptions) {
     const overridePath = process.env["CLI_CONFIG_PATH"];
@@ -24,6 +27,9 @@ export class CliWorkerApp {
     const config = await this.ensureConfig();
     this.currentConfig = config;
     this.backendClient = new BackendClient(config.backendUrl, config.cliId);
+    if (config.sessionToken) {
+      this.backendClient.setSessionToken(config.sessionToken);
+    }
     await this.registerWithBackend();
     this.startHeartbeat();
     this.startActionPolling();
@@ -61,6 +67,7 @@ export class CliWorkerApp {
       this.currentConfig.sessionToken = result.token;
       await this.configStore.save(this.currentConfig);
     }
+    this.backendClient.setSessionToken(this.currentConfig.sessionToken);
   }
 
   private startHeartbeat(): void {
@@ -94,12 +101,27 @@ export class CliWorkerApp {
     if (!this.backendClient || !this.currentConfig) return;
     const poll = async () => {
       try {
-        const actions = await this.backendClient?.listActions();
+        if (!this.backendClient || !this.currentConfig) {
+          return;
+        }
+        console.log("[cli-worker] polling backend for actions…");
+        const actions = await this.backendClient.listActions();
+        if (actions.length > 0) {
+          console.log("[cli-worker] received actions", {
+            count: actions.length,
+            ids: actions.map((a) => a.actionId),
+          });
+        }
         if (actions && actions.length > 0) {
           for (const action of actions) {
-            await this.handleAction(action);
-            if (this.backendClient) {
+            if (!this.actionTracker.begin(action.actionId)) {
+              continue;
+            }
+            try {
+              await this.handleAction(action);
               await this.backendClient.acknowledgeAction(action.actionId);
+            } finally {
+              this.actionTracker.end(action.actionId);
             }
           }
         }
@@ -134,6 +156,9 @@ export class CliWorkerApp {
           command: payload?.command ?? [],
         });
         await this.runCommandAction(payload);
+        break;
+      case "login_request":
+        await this.handleLoginRequest();
         break;
       default:
         console.log("[cli-worker] unhandled action", { ...baseInfo, payload });
@@ -173,6 +198,29 @@ export class CliWorkerApp {
         resolve();
       });
     });
+  }
+
+  private async handleLoginRequest(): Promise<void> {
+      if (!this.backendClient || !this.currentConfig) {
+        console.warn("[cli-worker] cannot process login_request – not ready");
+        return;
+      }
+    console.log("[cli-worker] Starting Codex login flow locally...");
+    try {
+      const authData = await runLocalCodexLogin();
+      await this.backendClient.uploadAuthData(
+        this.currentConfig.sessionToken,
+        authData,
+      );
+      console.log("[cli-worker] Codex login completed and uploaded to backend.");
+    } catch (error) {
+      console.error("[cli-worker] Codex login failed", error);
+      try {
+        await this.backendClient.cancelLogin();
+      } catch (cancelError) {
+        console.warn("[cli-worker] failed to notify backend about login cancel", cancelError);
+      }
+    }
   }
 }
 
