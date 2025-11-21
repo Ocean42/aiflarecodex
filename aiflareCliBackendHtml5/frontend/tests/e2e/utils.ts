@@ -133,3 +133,64 @@ export async function expectLogCount(page: Page, minimum: number): Promise<void>
   }
   throw new Error(`Expected at least ${minimum} log entries`);
 }
+
+export function getAssistantMessages(page: Page) {
+  return page
+    .locator("[data-testid='session-messages'] li")
+    .filter({
+      has: page.locator("strong", { hasText: /^AI:/ }),
+    });
+}
+
+export async function sendMessageAndExpectAssistant(
+  page: Page,
+  message: string,
+  expected: string | RegExp,
+  options?: { timeout?: number },
+): Promise<void> {
+  const assistantMessages = getAssistantMessages(page);
+  const initialCount = await assistantMessages.count();
+  await page.getByTestId("session-input").fill(message);
+  await page.getByTestId("session-send").click();
+  const timeout = options?.timeout ?? 15_000;
+  const newCount = await waitForAssistantCount(page, assistantMessages, initialCount + 1, timeout);
+  const target = assistantMessages.nth(newCount - 1);
+  if (typeof expected === "string") {
+    await expect(target).toContainText(expected, { timeout });
+  } else {
+    await expect(target).toHaveText(expected, { timeout });
+  }
+}
+
+export async function expectLatestAssistantMessage(
+  page: Page,
+  expected: string | RegExp,
+  options?: { timeout?: number },
+): Promise<void> {
+  const assistantMessages = getAssistantMessages(page);
+  const timeout = options?.timeout ?? 10_000;
+  await expect(assistantMessages.first()).toBeVisible({ timeout });
+  const target = assistantMessages.last();
+  if (typeof expected === "string") {
+    await expect(target).toContainText(expected, { timeout });
+  } else {
+    await expect(target).toHaveText(expected, { timeout });
+  }
+}
+
+async function waitForAssistantCount(
+  page: Page,
+  assistantMessages: ReturnType<typeof getAssistantMessages>,
+  minCount: number,
+  timeout: number,
+): Promise<number> {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    const current = await assistantMessages.count();
+    if (current >= minCount) {
+      return current;
+    }
+    await page.waitForTimeout(200);
+  }
+  throw new Error(`Timed out waiting for assistant responses to reach ${minCount}`);
+}

@@ -123,7 +123,7 @@ Diese Reihenfolge ermöglicht erst stabile Backend-Domäne, dann Runner + APIs, 
 ### Frontend
 - `appState` verwaltet Maps für CLIs, Sessions, Actions und Transcript (`frontend/src/state/appState.ts`). Bootstrap- und Polling-Refresh laufen in `App.tsx`.
 - `SessionWindow` rendert den Verlauf samt Input und Send-Button (`frontend/src/components/SessionWindow.tsx`). Nachrichten holen sich aktuell per REST (`ProtoClient.sendSessionMessage`/`fetchSessionMessages`).
-- Session-Liste + Formular liegen in `SessionFormSection.tsx`. Ein dedizierter `SessionNavigator` ist noch TODO (geplant in Abschnitt 5.3), ebenso SSE/Deltas (Abschnitt 3.2/5.1).
+- Session-Liste und Formular sind aufgeteilt: `SessionFormSection.tsx` erzeugt neue Sessions, `SessionNavigator.tsx` liefert Status-Badges + Auswahl (Abschnitt 5.3 umgesetzt). Live-Updates kommen via `App.tsx` → `ProtoClient.subscribeSessionEvents` (Abschnitt 3.2).
 
 ### Tests & Playwright-Vorbereitung
 - Backend besitzt Unit-/Integrationstests für Store, Runner, Tool-Bridge, Backend-Routen (`backend/tests/*.test.ts`).
@@ -132,7 +132,7 @@ Diese Reihenfolge ermöglicht erst stabile Backend-Domäne, dann Runner + APIs, 
 - Test-Utilities (waitForBackendCli, waitForSessionCount, etc.) kapseln REST Polling; CLI-Registrierung läuft automatisch über den Worker.
 
 ### Offene Punkte vor „Playwright grün“
-- UI empfängt Updates weiterhin per Polling (kein SSE/WebSocket). Für langlebige Runs sollte Abschnitt 3.2 umgesetzt werden, die vorhandene Logik funktioniert aber für Playwright so lange das Polling mitzieht.
-- `SessionNavigator` + Status-Badges fehlen (Abschnitt 5.3). Aktuell übernimmt `SessionFormSection` die Auswahl.
-- Tool-E2E (Abschnitt 4.2 + Playwright „tool-bridge“) ist noch nicht geschrieben. Backend/CLI-Pfade sind vorbereitet, aber es fehlt ein Test, der echten Tool-Output im UI verifiziert.
+- (✔ erledigt) Session-Updates kommen über `/api/session-events` (SSE). Kein zusätzliches Polling nötig, abgesehen vom Bootstrap.
+- (✔ erledigt) `SessionNavigator` inkl. Status-Badges existiert und wird im UI genutzt.
+- Tool-E2E (Abschnitt 4.2 + Playwright „tool-bridge“) war offen – wird jetzt durch `tests/e2e/tool-shell.spec.ts` (Shell) und `tests/e2e/tool-view-image.spec.ts` (Bildanalyse via `view_image`) abgedeckt, beide laufen gegen Backend+CLI.
 - Sobald `npm run build` (Root) gelaufen ist, lässt sich `npm run e2e` ausführen. Falls Credential-abhängige AgentLoop-Runs geplant sind, vorher `OPENAI_API_KEY` + Auth-Flow sicherstellen; ohne Key arbeitet der Legacy-Responder und die „Hallo“-Checks bestehen trotzdem.
