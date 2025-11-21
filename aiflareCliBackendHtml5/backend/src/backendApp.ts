@@ -240,7 +240,7 @@ export class BackendApp {
       .post((req, res) => {
         const cliId: CliId | undefined = req.body?.cliId;
         const workdir: string = req.body?.workdir ?? process.cwd();
-        const model: string = req.body?.model ?? "gpt-4.1-mini";
+        const model: string = req.body?.model ?? "gpt-5.1-codex";
         const title: string | undefined = req.body?.title;
         if (!cliId) {
           res.status(400).json({ error: "missing_cli_id" });

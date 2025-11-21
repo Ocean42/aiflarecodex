@@ -94,3 +94,4 @@ aiflareCliBackendHtml5/tmp/cli-e2e-config.json
 /aiflareCliBackendHtml5/frontend/test-results
 /aiflareCliBackendHtml5/frontend/tmp
 /aiflareCliBackendHtml5/backend/tmp
+/aiflareCliBackendHtml5/backend/log

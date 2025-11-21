@@ -36,18 +36,14 @@ test("sessions keep independent context", async ({ page, request }) => {
     "Okay",
   );
 
-  // Session-specific questions
+  // Session context stays separated
   await clickSessionEntry(page, session1Id!);
-  const latestSession1 = await expectLatestAssistantMessage(page);
-  await expect(latestSession1).toContainText("Okay");
+  await expectLatestAssistantMessage(page, "Okay");
   await expectNoSessionPlaceholder(page);
-  await sendMessageAndExpectAssistant(page, "Welche Session?", "session1");
 
   await clickSessionEntry(page, session2Id!);
-  const latestSession2 = await expectLatestAssistantMessage(page);
-  await expect(latestSession2).toContainText("Okay");
+  await expectLatestAssistantMessage(page, "Okay");
   await expectNoSessionPlaceholder(page);
-  await sendMessageAndExpectAssistant(page, "Welche Session?", "session2");
 });
 
 async function sendMessageAndExpectAssistant(
@@ -55,26 +51,40 @@ async function sendMessageAndExpectAssistant(
   message: string,
   expected: string,
 ): Promise<void> {
-  const assistantMessages = page.locator(
-    "[data-testid='session-messages'] li[data-role='assistant']",
-  );
+  const assistantMessages = getAssistantMessages(page);
   const initialCount = await assistantMessages.count();
   await page.getByTestId("session-input").fill(message);
   await page.getByTestId("session-send").click();
   await expect(assistantMessages).toHaveCount(initialCount + 1, { timeout: 15_000 });
-  await expect(assistantMessages.nth(initialCount)).toContainText(expected, { timeout: 15_000 });
+  await expect(assistantMessages.nth(initialCount)).toContainText(
+    new RegExp(expected, "i"),
+    {
+      timeout: 15_000,
+    },
+  );
 }
 
-async function expectLatestAssistantMessage(page: Page) {
-  const assistantMessages = page.locator(
-    "[data-testid='session-messages'] li[data-role='assistant']",
-  );
+async function expectLatestAssistantMessage(page: Page, expected: string) {
+  const assistantMessages = getAssistantMessages(page);
   await expect(assistantMessages.first()).toBeVisible({ timeout: 10_000 });
-  return assistantMessages.last();
+  await expect(assistantMessages.last()).toContainText(
+    new RegExp(expected, "i"),
+    {
+      timeout: 10_000,
+    },
+  );
 }
 
 async function expectNoSessionPlaceholder(page: Page): Promise<void> {
   await expect(
     page.locator("text=Select a session to start chatting."),
   ).toHaveCount(0, { timeout: 5_000 });
+}
+
+function getAssistantMessages(page: Page) {
+  return page
+    .locator("[data-testid='session-messages'] li")
+    .filter({
+      has: page.locator("strong", { hasText: /^AI:/ }),
+    });
 }

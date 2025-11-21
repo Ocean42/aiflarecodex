@@ -71,7 +71,7 @@ export function App(): JSX.Element {
       form: {
         cliId: "",
         workdir: "/tmp",
-        model: "gpt-4.1-mini",
+        model: "gpt-5.1-codex",
       },
       logs: [],
       auth: null,
