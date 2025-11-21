@@ -676,8 +676,10 @@ export class AgentLoop {
         this.stageStreamedText(event.item_id, next, stageItem);
     }
     handleOutputTextDoneEvent(event, stageItem) {
-        this.outputTextStreamBuffers.set(event.item_id, event.text);
-        this.stageStreamedText(event.item_id, event.text, stageItem, {
+        const prev = this.outputTextStreamBuffers.get(event.item_id) ?? "";
+        const next = prev ? prev + event.text : event.text;
+        this.outputTextStreamBuffers.set(event.item_id, next);
+        this.stageStreamedText(event.item_id, next, stageItem, {
             markDelivered: true,
         });
         this.outputTextStreamBuffers.delete(event.item_id);

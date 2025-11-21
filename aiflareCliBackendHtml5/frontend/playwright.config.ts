@@ -8,7 +8,7 @@ const baseURL = process.env["E2E_FRONTEND_URL"] ?? `http://127.0.0.1:${frontendP
 
 export default defineConfig({
   testDir: "tests/e2e",
-  timeout: 120_000,
+  timeout: 30_000,
   retries: 0,
   fullyParallel: false,
   workers: 1,

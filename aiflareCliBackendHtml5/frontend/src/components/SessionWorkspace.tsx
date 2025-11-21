@@ -79,11 +79,20 @@ export function SessionWorkspace({
       let panel = api.getPanel(sessionId);
       let created = false;
       if (!panel) {
+        const existingGroups = api.groups;
+        const position =
+          existingGroups.length > 0
+            ? {
+                referenceGroup: existingGroups[existingGroups.length - 1],
+                direction: "right" as const,
+              }
+            : undefined;
         api.addPanel({
           id: sessionId,
           component: "sessionWindow",
           title,
           params,
+          position,
         });
         panel = api.getPanel(sessionId);
         created = true;

@@ -192,7 +192,7 @@ export async function expectLatestAssistantMessage(
 ): Promise<void> {
   const assistantMessages = getAssistantMessages(page, sessionId);
   const timeout = options?.timeout ?? 10_000;
-  await expect(assistantMessages.first()).toBeVisible({ timeout });
+  await waitForAssistantCount(page, assistantMessages, 1, timeout);
   const target = assistantMessages.last();
   if (typeof expected === "string") {
     await expect(target).toContainText(expected, { timeout });
