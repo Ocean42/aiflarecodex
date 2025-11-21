@@ -38,7 +38,7 @@ test("frontend receives the same number of message updates as backend stream chu
 
   const backendChunks = await getAssistantChunkCount(request, sessionId!);
   const frontendUpdates = await page.evaluate((sid) => {
-    return window.getSessionMessageUpdateCount?.(sid) ?? 0;
+    return window.getSessionTimelineUpdateCount?.(sid) ?? 0;
   }, sessionId!);
 
   expect(frontendUpdates, `backendChunks=${backendChunks} frontendUpdates=${frontendUpdates}`).toBe(

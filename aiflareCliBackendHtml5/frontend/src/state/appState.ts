@@ -3,12 +3,12 @@ import type {
   CliId,
   CliSummary,
   SessionId,
-  SessionMessage,
+  SessionEvent,
   SessionSummary,
 } from "@aiflare/protocol";
 import {
-  recordSessionMessageUpdate,
-  resetSessionMessageUpdates,
+  recordSessionTimelineUpdate,
+  resetSessionTimelineUpdates,
 } from "./sessionUpdateTracker.js";
 
 type Listener = () => void;
@@ -17,7 +17,7 @@ export class AppState {
   readonly clis = new Map<CliId, CliSummary>();
   readonly sessions = new Map<SessionId, SessionSummary>();
   readonly actions: Array<{ actionId: string; cliId: CliId; sessionId?: SessionId; payload: unknown }> = [];
-  readonly sessionMessages = new Map<SessionId, Array<SessionMessage>>();
+  readonly sessionTimeline = new Map<SessionId, Array<SessionEvent>>();
   readonly openSessionIds: Array<SessionId> = [];
   private readonly listeners = new Set<Listener>();
 
@@ -41,37 +41,30 @@ export class AppState {
     this.notify();
   }
 
-  setSessionMessages(sessionId: SessionId, messages: Array<SessionMessage>): void {
-    this.sessionMessages.set(sessionId, messages);
+  setSessionTimeline(sessionId: SessionId, events: Array<SessionEvent>): void {
+    this.sessionTimeline.set(sessionId, events);
     this.notify();
   }
 
-  appendSessionMessages(sessionId: SessionId, newMessages: Array<SessionMessage>): void {
-    if (newMessages.length === 0) {
+  appendSessionTimeline(sessionId: SessionId, newEvents: Array<SessionEvent>): void {
+    if (newEvents.length === 0) {
       return;
     }
-    const existing = this.sessionMessages.get(sessionId) ?? [];
-    this.sessionMessages.set(sessionId, [...existing, ...newMessages]);
-    if (newMessages.some((message) => message.role === "assistant")) {
-      recordSessionMessageUpdate(sessionId);
+    const existing = this.sessionTimeline.get(sessionId) ?? [];
+    const byId = new Map(existing.map((event) => [event.id, event]));
+    for (const event of newEvents) {
+      byId.set(event.id, event);
     }
-    this.notify();
-  }
-
-  updateSessionMessage(sessionId: SessionId, message: SessionMessage): void {
-    const existing = this.sessionMessages.get(sessionId);
-    if (!existing) {
-      return;
-    }
-    const index = existing.findIndex((entry) => entry.id === message.id);
-    if (index === -1) {
-      return;
-    }
-    const updated = existing.slice();
-    updated[index] = message;
-    this.sessionMessages.set(sessionId, updated);
-    if (message.role === "assistant") {
-      recordSessionMessageUpdate(sessionId);
+    const merged = Array.from(byId.values()).sort((a, b) => {
+      const cmp = a.createdAt.localeCompare(b.createdAt);
+      if (cmp !== 0) {
+        return cmp;
+      }
+      return a.id.localeCompare(b.id);
+    });
+    this.sessionTimeline.set(sessionId, merged);
+    if (newEvents.some((event) => event.type === "message" && event.role === "assistant")) {
+      recordSessionTimelineUpdate(sessionId);
     }
     this.notify();
   }
@@ -102,11 +95,11 @@ export class AppState {
     this.sessions.clear();
     state.sessions.forEach((session) => this.sessions.set(session.id, session));
     this.actions.splice(0, this.actions.length, ...state.actions);
-    this.sessionMessages.clear();
+    this.sessionTimeline.clear();
     state.sessions.forEach((session) => {
-      const messages = state.transcripts[session.id] ?? [];
-      this.sessionMessages.set(session.id, messages);
-      resetSessionMessageUpdates(session.id);
+      const events = state.timeline[session.id] ?? [];
+      this.sessionTimeline.set(session.id, events);
+      resetSessionTimelineUpdates(session.id);
     });
     this.openSessionIds.splice(0, this.openSessionIds.length);
     for (const sessionId of previouslyOpen) {

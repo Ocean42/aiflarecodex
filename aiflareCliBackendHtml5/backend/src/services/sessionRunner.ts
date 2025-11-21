@@ -65,28 +65,10 @@ class SessionRunner {
       throw new Error(`session ${this.sessionId} not found`);
     }
     this.store.updateSummary(this.sessionId, { status: "running" });
-    const userMessage = this.store.appendMessage(
-      this.sessionId,
-      "user",
-      item.prompt,
-    );
-    this.store.appendEvent(this.sessionId, "user_message_appended", {
-      messageId: userMessage.id,
-    });
+    this.store.appendMessage(this.sessionId, "user", item.prompt);
     try {
       const reply = await this.runtime.runPrompt(item.prompt);
-      const assistantMessage = this.store.appendMessage(
-        this.sessionId,
-        "assistant",
-        reply,
-      );
-      this.store.appendEvent(this.sessionId, "assistant_message_appended", {
-        messageId: assistantMessage.id,
-      });
-      this.store.appendEvent(this.sessionId, "message_exchange_completed", {
-        userMessageId: userMessage.id,
-        assistantMessageId: assistantMessage.id,
-      });
+      this.store.appendMessage(this.sessionId, "assistant", reply);
       item.resolve({ reply });
     } finally {
       this.store.updateSummary(this.sessionId, { status: "waiting" });

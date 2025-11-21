@@ -1,32 +1,13 @@
 import { mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { SessionId, SessionSummary } from "@aiflare/protocol";
-
-export type SessionMessage = {
-  id: string;
-  sessionId: SessionId;
-  role: "user" | "assistant" | "system";
-  content: string;
-  timestamp: string;
-};
-
-export type SessionEvent = {
-  timestamp: string;
-  event: string;
-  data?: unknown;
-};
-
-export type PendingUserMessage = {
-  id: string;
-  content: string;
-  timestamp: string;
-};
-
-export type AgentItem = {
-  id: string;
-  [key: string]: unknown;
-};
+import type {
+  SessionEvent,
+  SessionId,
+  SessionMessageContentSegment,
+  SessionMessageEvent,
+  SessionSummary,
+} from "@aiflare/protocol";
 
 export type SessionStoreEvent =
   | {
@@ -35,43 +16,38 @@ export type SessionStoreEvent =
       summary: SessionSummary;
     }
   | {
-      type: "session_messages_appended";
+      type: "session_events_appended";
       sessionId: SessionId;
-      messages: Array<SessionMessage>;
-    }
-  | {
-      type: "session_message_updated";
-      sessionId: SessionId;
-      message: SessionMessage;
+      events: Array<SessionEvent>;
     };
 
 export interface SessionStoreOptions {
   persistDir?: string;
-  maxMessages?: number;
+  maxEvents?: number;
 }
 
 type NormalizedSessionStoreOptions = {
-  maxMessages: number;
+  maxEvents: number;
   persistDir?: string;
 };
 
 type SessionSnapshot = {
+  version: 2;
   summary: SessionSummary;
-  messages?: Array<SessionMessage>;
-  events?: Array<SessionEvent>;
-  pendingUserMessages?: Array<PendingUserMessage>;
-  agentItems?: Array<AgentItem>;
+  timeline: Array<SessionEvent>;
 };
 
-const DEFAULT_MAX_MESSAGES = 500;
+export type SessionEventDraft = Omit<SessionEvent, "sessionId" | "createdAt"> & {
+  id?: string;
+  createdAt?: string;
+};
+
+const DEFAULT_MAX_EVENTS = 1000;
 
 class SessionState {
   private summary: SessionSummary;
   private readonly options: NormalizedSessionStoreOptions;
-  private messages: Array<SessionMessage>;
-  private events: Array<SessionEvent>;
-  private pendingUserMessages: Array<PendingUserMessage>;
-  private agentItems: Array<AgentItem>;
+  private timeline: Array<SessionEvent>;
 
   constructor(
     summary: SessionSummary,
@@ -80,11 +56,8 @@ class SessionState {
   ) {
     this.summary = summary;
     this.options = options;
-    this.messages =
-      snapshot?.messages?.slice(-this.options.maxMessages) ?? [];
-    this.events = snapshot?.events ?? [];
-    this.pendingUserMessages = snapshot?.pendingUserMessages ?? [];
-    this.agentItems = snapshot?.agentItems ?? [];
+    this.timeline =
+      snapshot?.timeline?.slice(-this.options.maxEvents) ?? [];
   }
 
   get id(): SessionId {
@@ -105,101 +78,79 @@ class SessionState {
   }
 
   appendMessage(
-    role: SessionMessage["role"],
+    role: SessionMessageEvent["role"],
     content: string,
-    options?: { id?: string },
-  ): SessionMessage {
-    const message: SessionMessage = {
-      id: options?.id ?? `msg_${randomUUID()}`,
+    options?: {
+      id?: string;
+      segments?: Array<SessionMessageContentSegment>;
+      state?: SessionMessageEvent["state"];
+      metadata?: Record<string, unknown>;
+    },
+  ): SessionMessageEvent {
+    const segments = options?.segments ?? [{ type: "text", text: content }];
+    const [event] = this.appendEvents([
+      {
+        type: "message",
+        role,
+        content: segments,
+        metadata: options?.metadata,
+        state: options?.state,
+        id: options?.id,
+      },
+    ]) as Array<SessionMessageEvent>;
+    return event;
+  }
+
+  appendEvents(drafts: Array<SessionEventDraft>): Array<SessionEvent> {
+    if (drafts.length === 0) {
+      return [];
+    }
+    const applied: Array<SessionEvent> = [];
+    for (const draft of drafts) {
+      const normalized = this.normalizeEvent(draft);
+      const existingIndex = this.timeline.findIndex(
+        (entry) => entry.id === normalized.id,
+      );
+      if (existingIndex >= 0) {
+        const current = this.timeline[existingIndex]!;
+        const merged = {
+          ...normalized,
+          createdAt: draft.createdAt ?? current.createdAt,
+        } as SessionEvent;
+        this.timeline[existingIndex] = merged;
+        applied.push(merged);
+      } else {
+        this.timeline.push(normalized);
+        applied.push(normalized);
+      }
+    }
+    this.timeline.sort((a, b) => {
+      const cmp = a.createdAt.localeCompare(b.createdAt);
+      if (cmp !== 0) {
+        return cmp;
+      }
+      return a.id.localeCompare(b.id);
+    });
+    if (this.timeline.length > this.options.maxEvents) {
+      this.timeline = this.timeline.slice(-this.options.maxEvents);
+    }
+    this.persist();
+    return applied.map((event) => ({ ...event }));
+  }
+
+  getTimeline(): Array<SessionEvent> {
+    return this.timeline.slice();
+  }
+
+  private normalizeEvent(draft: SessionEventDraft): SessionEvent {
+    const id = draft.id ?? `evt_${randomUUID()}`;
+    const createdAt = draft.createdAt ?? new Date().toISOString();
+    return {
+      ...draft,
+      id,
       sessionId: this.summary.id,
-      role,
-      content,
-      timestamp: new Date().toISOString(),
-    };
-    this.messages = [...this.messages, message].slice(
-      -this.options.maxMessages,
-    );
-    this.persist();
-    return message;
-  }
-
-  getMessage(messageId: string): SessionMessage | undefined {
-    return this.messages.find((message) => message.id === messageId);
-  }
-
-  updateMessage(messageId: string, updates: Partial<Omit<SessionMessage, "id" | "sessionId">>): SessionMessage {
-    const index = this.messages.findIndex((message) => message.id === messageId);
-    if (index === -1) {
-      throw new Error(`message ${messageId} not found`);
-    }
-    const current = this.messages[index]!;
-    const updated: SessionMessage = {
-      ...current,
-      ...updates,
-      id: current.id,
-      sessionId: current.sessionId,
-      timestamp: updates.timestamp ?? new Date().toISOString(),
-    };
-    this.messages[index] = updated;
-    this.persist();
-    return updated;
-  }
-
-  getMessages(): Array<SessionMessage> {
-    return this.messages.slice();
-  }
-
-  appendEvent(event: string, data?: unknown): SessionEvent {
-    const entry: SessionEvent = {
-      timestamp: new Date().toISOString(),
-      event,
-      data,
-    };
-    this.events = [...this.events, entry];
-    this.persist();
-    return entry;
-  }
-
-  getEvents(): Array<SessionEvent> {
-    return this.events.slice();
-  }
-
-  addPendingUserMessage(content: string): PendingUserMessage {
-    const entry: PendingUserMessage = {
-      id: `pending_${randomUUID()}`,
-      content,
-      timestamp: new Date().toISOString(),
-    };
-    this.pendingUserMessages = [...this.pendingUserMessages, entry];
-    this.persist();
-    return entry;
-  }
-
-  resolvePendingUserMessage(pendingId: string): void {
-    this.pendingUserMessages = this.pendingUserMessages.filter(
-      (entry) => entry.id !== pendingId,
-    );
-    this.persist();
-  }
-
-  getPendingUserMessages(): Array<PendingUserMessage> {
-    return this.pendingUserMessages.slice();
-  }
-
-  upsertAgentItem(item: AgentItem): void {
-    const existingIndex = this.agentItems.findIndex(
-      (entry) => entry.id === item.id,
-    );
-    if (existingIndex >= 0) {
-      this.agentItems[existingIndex] = item;
-    } else {
-      this.agentItems.push(item);
-    }
-    this.persist();
-  }
-
-  getAgentItems(): Array<AgentItem> {
-    return this.agentItems.slice();
+      createdAt,
+    } as SessionEvent;
   }
 
   persist(): void {
@@ -207,11 +158,9 @@ class SessionState {
       return;
     }
     const payload: SessionSnapshot = {
+      version: 2,
       summary: this.summary,
-      messages: this.messages,
-      events: this.events,
-      pendingUserMessages: this.pendingUserMessages,
-      agentItems: this.agentItems,
+      timeline: this.timeline,
     };
     mkdirSync(this.options.persistDir, { recursive: true });
     const file = join(this.options.persistDir, `${this.summary.id}.json`);
@@ -226,7 +175,7 @@ export class SessionStore {
 
   constructor(options?: SessionStoreOptions) {
     this.options = {
-      maxMessages: options?.maxMessages ?? DEFAULT_MAX_MESSAGES,
+      maxEvents: options?.maxEvents ?? DEFAULT_MAX_EVENTS,
       persistDir: options?.persistDir,
     };
     if (this.options.persistDir) {
@@ -264,44 +213,72 @@ export class SessionStore {
 
   appendMessage(
     sessionId: SessionId,
-    role: SessionMessage["role"],
+    role: SessionMessageEvent["role"],
     content: string,
-    options?: { id?: string },
-  ): SessionMessage {
+    options?: {
+      id?: string;
+      segments?: Array<SessionMessageContentSegment>;
+      state?: SessionMessageEvent["state"];
+      metadata?: Record<string, unknown>;
+    },
+  ): SessionMessageEvent {
     const session = this.requireSession(sessionId);
     const message = session.appendMessage(role, content, options);
     this.emit({
-      type: "session_messages_appended",
+      type: "session_events_appended",
       sessionId,
-      messages: [message],
+      events: [message],
     });
     return message;
   }
 
-  upsertAssistantMessage(sessionId: SessionId, externalId: string, content: string): SessionMessage {
+  upsertAssistantMessage(
+    sessionId: SessionId,
+    externalId: string,
+    content: string,
+    options?: {
+      segments?: Array<SessionMessageContentSegment>;
+      state?: SessionMessageEvent["state"];
+      metadata?: Record<string, unknown>;
+    },
+  ): SessionMessageEvent {
     const session = this.requireSession(sessionId);
-    const existing = session.getMessage(externalId);
-    if (existing) {
-      const updated = session.updateMessage(externalId, { content });
-      this.emit({
-        type: "session_message_updated",
-        sessionId,
-        message: updated,
-      });
-      return updated;
-    }
-    const created = session.appendMessage("assistant", content, { id: externalId });
+    const event = session.appendEvents([
+      {
+        type: "message",
+        role: "assistant",
+        content: options?.segments ?? [{ type: "text", text: content }],
+        state: options?.state,
+        metadata: options?.metadata,
+        id: externalId,
+      },
+    ])[0] as SessionMessageEvent;
     this.emit({
-      type: "session_messages_appended",
+      type: "session_events_appended",
       sessionId,
-      messages: [created],
+      events: [event],
     });
-    return created;
+    return event;
   }
 
-  appendEvent(sessionId: SessionId, event: string, data?: unknown): SessionEvent {
+  appendTimelineEvents(
+    sessionId: SessionId,
+    drafts: Array<SessionEventDraft>,
+  ): Array<SessionEvent> {
     const session = this.requireSession(sessionId);
-    return session.appendEvent(event, data);
+    const events = session.appendEvents(drafts);
+    if (events.length > 0) {
+      this.emit({
+        type: "session_events_appended",
+        sessionId,
+        events,
+      });
+    }
+    return events;
+  }
+
+  getTimeline(sessionId: SessionId): Array<SessionEvent> {
+    return this.requireSession(sessionId).getTimeline();
   }
 
   updateSummary(
@@ -319,27 +296,19 @@ export class SessionStore {
     return summary;
   }
 
-  getMessages(sessionId: SessionId): Array<SessionMessage> {
-    return this.requireSession(sessionId).getMessages();
-  }
-
-  getEvents(sessionId: SessionId): Array<SessionEvent> {
-    return this.requireSession(sessionId).getEvents();
-  }
-
-  toTranscriptRecord(): Record<SessionId, Array<SessionMessage>> {
-    const transcripts: Record<SessionId, Array<SessionMessage>> = {};
-    for (const [sessionId, state] of this.sessions.entries()) {
-      transcripts[sessionId] = state.getMessages();
-    }
-    return transcripts;
-  }
-
   subscribe(listener: (event: SessionStoreEvent) => void): () => void {
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
     };
+  }
+
+  toTimelineRecord(): Record<SessionId, Array<SessionEvent>> {
+    const record: Record<SessionId, Array<SessionEvent>> = {};
+    for (const [sessionId, state] of this.sessions.entries()) {
+      record[sessionId] = state.getTimeline();
+    }
+    return record;
   }
 
   reset(): void {
@@ -373,7 +342,7 @@ export class SessionStore {
         const absolute = join(this.options.persistDir!, file);
         const raw = readFileSync(absolute, "utf-8");
         const snapshot = JSON.parse(raw) as SessionSnapshot;
-        if (!snapshot?.summary?.id) {
+        if (!snapshot?.summary?.id || snapshot.version !== 2) {
           continue;
         }
         const state = new SessionState(

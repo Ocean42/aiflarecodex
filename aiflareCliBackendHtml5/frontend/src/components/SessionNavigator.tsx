@@ -1,13 +1,9 @@
-import type {
-  SessionId,
-  SessionMessage,
-  SessionSummary,
-} from "@aiflare/protocol";
+import type { SessionEvent, SessionId, SessionSummary } from "@aiflare/protocol";
 
 type Props = {
   sessions: Array<SessionSummary>;
   openSessionIds: Array<SessionId>;
-  messagesBySession: Map<SessionId, Array<SessionMessage>>;
+  timelineBySession: Map<SessionId, Array<SessionEvent>>;
   onSelect(sessionId: SessionId): void;
 };
 
@@ -19,19 +15,28 @@ const STATUS_LABEL: Record<SessionSummary["status"], string> = {
 };
 
 function getLastMessagePreview(
-  messages: Array<SessionMessage> | undefined,
+  events: Array<SessionEvent> | undefined,
 ): string {
-  if (!messages || messages.length === 0) {
+  if (!events || events.length === 0) {
     return "";
   }
-  const last = messages[messages.length - 1];
-  return last.content;
+  const reversed = [...events].reverse();
+  const lastMessage = reversed.find((event) => event.type === "message");
+  if (!lastMessage || lastMessage.type !== "message") {
+    return "";
+  }
+  const text = lastMessage.content
+    .map((segment) => ("text" in segment && segment.text ? segment.text : ""))
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+  return text;
 }
 
 export function SessionNavigator({
   sessions,
   openSessionIds,
-  messagesBySession,
+  timelineBySession,
   onSelect,
 }: Props): JSX.Element {
   if (sessions.length === 0) {
@@ -50,7 +55,7 @@ export function SessionNavigator({
         {sessions.map((session) => {
           const isActive = openSessionIds.includes(session.id);
           const preview = getLastMessagePreview(
-            messagesBySession.get(session.id),
+            timelineBySession.get(session.id),
           );
           const status =
             STATUS_LABEL[session.status] ?? session.status.toUpperCase();

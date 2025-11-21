@@ -23,7 +23,7 @@ describe("SessionStore", () => {
   });
 
   it("appends messages, trims history and persists to disk", () => {
-    const store = new SessionStore({ persistDir, maxMessages: 3 });
+    const store = new SessionStore({ persistDir, maxEvents: 3 });
     store.createSession(summary);
 
     store.appendMessage(summary.id, "user", "hello");
@@ -31,14 +31,14 @@ describe("SessionStore", () => {
     store.appendMessage(summary.id, "user", "again");
     store.appendMessage(summary.id, "assistant", "trimmed");
 
-    const messages = store.getMessages(summary.id);
-    expect(messages).toHaveLength(3);
-    expect(messages.at(0)?.content).toBe("world");
+    const timeline = store.getTimeline(summary.id).filter((event) => event.type === "message");
+    expect(timeline).toHaveLength(3);
+    expect(timeline.at(0)?.content[0]).toMatchObject({ text: "world" });
 
     const snapshot = JSON.parse(
       readFileSync(join(persistDir, `${summary.id}.json`), "utf-8"),
     );
-    expect(snapshot.messages).toHaveLength(3);
+    expect(snapshot.timeline).toHaveLength(3);
     expect(snapshot.summary.id).toBe(summary.id);
 
     rmSync(persistDir, { recursive: true, force: true });
@@ -49,19 +49,14 @@ describe("SessionStore", () => {
       const store = new SessionStore({ persistDir });
       store.createSession(summary);
       store.appendMessage(summary.id, "user", "persist me");
-      store.appendEvent(summary.id, "created");
     }
 
     const restored = new SessionStore({ persistDir });
-    const restoredMessages = restored.getMessages(summary.id);
+    const restoredTimeline = restored.getTimeline(summary.id);
+    const restoredMessages = restoredTimeline.filter((event) => event.type === "message");
     expect(restored.count()).toBe(1);
     expect(restoredMessages).toHaveLength(1);
-    expect(restoredMessages[0]?.content).toBe("persist me");
-
-    const history = restored.getEvents(summary.id);
-    expect(history).toEqual(
-      expect.arrayContaining([expect.objectContaining({ event: "created" })]),
-    );
+    expect(restoredMessages[0]?.content[0]).toMatchObject({ text: "persist me" });
 
     rmSync(persistDir, { recursive: true, force: true });
   });
@@ -80,7 +75,7 @@ describe("SessionStore", () => {
 
     expect(received).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ type: "session_messages_appended" }),
+        expect.objectContaining({ type: "session_events_appended" }),
         expect.objectContaining({
           type: "session_summary_updated",
           summary: expect.objectContaining({ status: "running" }),

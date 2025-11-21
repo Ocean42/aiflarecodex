@@ -98,12 +98,118 @@ export interface CliSummary {
   sessionCount: number;
 }
 
-export interface SessionMessage {
+export type SessionEvent =
+  | SessionMessageEvent
+  | SessionPlanEvent
+  | SessionToolCallStartedEvent
+  | SessionToolCallOutputEvent
+  | SessionExecEvent
+  | SessionExecOutputEvent
+  | SessionReasoningSummaryDeltaEvent
+  | SessionReasoningContentDeltaEvent
+  | SessionReasoningSectionBreakEvent;
+
+export interface SessionEventBase {
   id: string;
   sessionId: SessionId;
-  role: "user" | "assistant" | "system";
-  content: string;
-  timestamp: string;
+  createdAt: string;
+}
+
+export interface SessionMessageEvent extends SessionEventBase {
+  type: "message";
+  role: "user" | "assistant" | "system" | "tool";
+  content: Array<SessionMessageContentSegment>;
+  state?: "streaming" | "completed";
+  metadata?: Record<string, unknown>;
+}
+
+export type SessionMessageContentSegment =
+  | {
+      type: "text";
+      text: string;
+    }
+  | {
+      type: "code";
+      text: string;
+      language?: string;
+    }
+  | {
+      type: "tool_invocation";
+      toolName: string;
+      callId: string;
+      arguments: unknown;
+    }
+  | {
+      type: "tool_result";
+      toolName: string;
+      callId: string;
+      status: "ok" | "error";
+      output?: string;
+      error?: string;
+    };
+
+export type PlanItemStatus = "pending" | "in_progress" | "completed" | "blocked";
+
+export interface SessionPlanEvent extends SessionEventBase {
+  type: "plan_update";
+  explanation?: string;
+  plan: Array<{
+    id?: string;
+    step: string;
+    status: PlanItemStatus;
+  }>;
+}
+
+export interface SessionToolCallStartedEvent extends SessionEventBase {
+  type: "tool_call_started";
+  callId: string;
+  toolName: string;
+}
+
+export interface SessionToolCallOutputEvent extends SessionEventBase {
+  type: "tool_call_output";
+  callId: string;
+  toolName: string;
+  status: "ok" | "error";
+  durationSeconds?: number;
+  outputCount?: number;
+  error?: string;
+}
+
+export type ExecEventPhase = "begin" | "end";
+
+export interface SessionExecEvent extends SessionEventBase {
+  type: "exec_event";
+  phase: ExecEventPhase;
+  callId?: string;
+  command: Array<string>;
+  cwd?: string;
+  exitCode?: number;
+  durationSeconds?: number;
+}
+
+export interface SessionExecOutputEvent extends SessionEventBase {
+  type: "exec_output";
+  callId?: string;
+  stream: "stdout" | "stderr" | "combined";
+  text: string;
+}
+
+export interface SessionReasoningSummaryDeltaEvent extends SessionEventBase {
+  type: "reasoning_summary_delta";
+  summaryIndex: number;
+  delta: string;
+}
+
+export interface SessionReasoningContentDeltaEvent extends SessionEventBase {
+  type: "reasoning_content_delta";
+  contentIndex: number;
+  delta: string;
+}
+
+export interface SessionReasoningSectionBreakEvent extends SessionEventBase {
+  type: "reasoning_section_break";
+  summaryIndex: number;
 }
 
 export type FrontendDelta =
@@ -152,5 +258,5 @@ export interface BootstrapState {
     sessionId?: SessionId;
     payload: unknown;
   }>;
-  transcripts: Record<SessionId, Array<SessionMessage>>;
+  timeline: Record<SessionId, Array<SessionEvent>>;
 }

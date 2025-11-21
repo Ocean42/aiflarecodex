@@ -1,9 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
-import type {
-  SessionId,
-  SessionMessage,
-  SessionSummary,
-} from "@aiflare/protocol";
+import type { SessionEvent, SessionId, SessionSummary } from "@aiflare/protocol";
 import {
   DockviewReact,
   type DockviewReadyEvent,
@@ -14,21 +10,21 @@ import { SessionWindow } from "./SessionWindow.js";
 
 type SessionPanelParams = {
   sessionId: SessionId;
-  messages: Array<SessionMessage>;
+  timeline: Array<SessionEvent>;
 };
 
 type Props = {
   client: ProtoClient;
   sessions: Array<SessionSummary>;
   openSessionIds: Array<SessionId>;
-  messagesBySession: Map<SessionId, Array<SessionMessage>>;
+  timelineBySession: Map<SessionId, Array<SessionEvent>>;
 };
 
 export function SessionWorkspace({
   client,
   sessions,
   openSessionIds,
-  messagesBySession,
+  timelineBySession,
 }: Props): JSX.Element {
   const apiRef = useRef<DockviewReadyEvent["api"]>();
   const disposablesRef = useRef<Array<{ dispose(): void }>>([]);
@@ -46,7 +42,7 @@ export function SessionWorkspace({
         <SessionWindow
           client={client}
           sessionId={panelProps.params.sessionId}
-          messages={panelProps.params.messages}
+          timeline={panelProps.params.timeline}
         />
       ),
     }),
@@ -73,7 +69,7 @@ export function SessionWorkspace({
     for (const sessionId of openSessionIds) {
       const params: SessionPanelParams = {
         sessionId,
-        messages: messagesBySession.get(sessionId) ?? [],
+        timeline: timelineBySession.get(sessionId) ?? [],
       };
       const title = sessionLookup.get(sessionId)?.title ?? sessionId;
       let panel = api.getPanel(sessionId);
@@ -110,7 +106,7 @@ export function SessionWorkspace({
     if (openSessionIds.length === 0) {
       api.closeAllGroups();
     }
-  }, [openSessionIds, messagesBySession, sessionLookup]);
+  }, [openSessionIds, timelineBySession, sessionLookup]);
 
   useEffect(() => {
     syncPanels();

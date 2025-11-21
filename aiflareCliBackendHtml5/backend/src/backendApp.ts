@@ -7,8 +7,8 @@ import type {
   BootstrapState,
   CliId,
   CliSummary,
+  SessionEvent,
   SessionId,
-  SessionMessage,
   SessionSummary,
 } from "@aiflare/protocol";
 import {
@@ -60,7 +60,7 @@ export class BackendApp {
   private readonly sessionEventClients = new Set<express.Response>();
   private readonly logFile = process.env["BACKEND_LOG_FILE"] ?? "backend.log";
   private readonly sessionEventStats = {
-    messagesAppended: new Map<SessionId, number>(),
+    eventsAppended: new Map<SessionId, number>(),
     assistantChunkEmits: new Map<SessionId, number>(),
   };
 
@@ -270,7 +270,6 @@ export class BackendApp {
           title,
         };
         this.sessionStore.createSession(summary);
-        this.sessionStore.appendEvent(sessionId, "created", { cliId, workdir, model });
         const cli = this.clis.get(cliId);
         if (cli) {
           cli.sessionCount = this.countSessionsForCli(cliId);
@@ -279,16 +278,16 @@ export class BackendApp {
         res.status(201).json({ sessionId });
       });
 
-    app.get("/api/sessions/:sessionId/messages", (req, res) => {
+    app.get("/api/sessions/:sessionId/timeline", (req, res) => {
       const sessionId = req.params["sessionId"] as SessionId;
       if (!this.sessionStore.get(sessionId)) {
         res.status(404).json({ error: "session_not_found" });
         return;
       }
-      res.json({ messages: this.sessionStore.getMessages(sessionId) });
+      res.json({ timeline: this.sessionStore.getTimeline(sessionId) });
     });
 
-    app.post("/api/sessions/:sessionId/messages", async (req, res) => {
+    app.post("/api/sessions/:sessionId/timeline", async (req, res) => {
       const sessionId = req.params["sessionId"] as SessionId;
       const sessionExists = this.sessionStore.get(sessionId);
       if (!sessionExists) {
@@ -302,8 +301,8 @@ export class BackendApp {
       }
       try {
         const result = await this.sessionRunner.submitPrompt(sessionId, content);
-        const messages = this.sessionStore.getMessages(sessionId);
-        res.json({ reply: result.reply, messages });
+        const timeline = this.sessionStore.getTimeline(sessionId);
+        res.json({ reply: result.reply, timeline });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         this.sessionStore.updateSummary(sessionId, { status: "error" });
@@ -311,18 +310,9 @@ export class BackendApp {
       }
     });
 
-    app.get("/api/sessions/:sessionId/history", (req, res) => {
-      const sessionId = req.params["sessionId"] as SessionId;
-      if (!this.sessionStore.get(sessionId)) {
-        res.status(404).json({ error: "session_not_found" });
-        return;
-      }
-      res.json({ history: this.sessionStore.getEvents(sessionId) });
-    });
-
     app.post("/api/debug/reset", (_req, res) => {
       this.sessionStore.reset();
-      this.sessionEventStats.messagesAppended.clear();
+      this.sessionEventStats.eventsAppended.clear();
       this.sessionEventStats.assistantChunkEmits.clear();
       res.json({ status: "ok" });
     });
@@ -438,9 +428,6 @@ export class BackendApp {
           this.sessionStore.updateSummary(action.sessionId, {
             status: "waiting",
           });
-          this.sessionStore.appendEvent(action.sessionId, "action_acknowledged", {
-            actionId,
-          });
         }
         res.json({ ok: true });
         return;
@@ -467,9 +454,6 @@ export class BackendApp {
         res.status(404).json({ error: "call_not_found" });
         return;
       }
-      this.sessionStore.appendEvent(sessionId, "tool_result_received", {
-        callId,
-      });
       res.json({ ok: true });
     });
   }
@@ -489,7 +473,7 @@ export class BackendApp {
         sessionId,
         payload,
       })),
-      transcripts: this.sessionStore.toTranscriptRecord(),
+      timeline: this.sessionStore.toTimelineRecord(),
     };
   }
 
@@ -511,54 +495,33 @@ export class BackendApp {
       actionId,
       type: (payload as { type?: string })?.type ?? "unknown",
     });
-    if (sessionId) {
-      this.sessionStore.appendEvent(sessionId, "action_enqueued", {
-        actionId,
-        payload,
-      });
-    }
   }
 
   private broadcastSessionEvent(event: SessionStoreEvent): void {
-    let payload:
+    const payload:
       | {
-          type: "session_summary_updated";
+          type: "session_events_appended";
           sessionId: SessionId;
+          events: Array<SessionEvent>;
+        }
+      | {
+          type: "session_events_appended";
+          sessionId: SessionId;
+          events: Array<SessionEvent>;
           summary: SessionSummary;
-        }
-      | {
-          type: "session_messages_appended";
-          sessionId: SessionId;
-          messages: Array<SessionMessage>;
-        }
-      | {
-          type: "session_message_updated";
-          sessionId: SessionId;
-          message: SessionMessage;
-        };
-    switch (event.type) {
-      case "session_summary_updated":
-        payload = {
-          type: "session_summary_updated",
-          sessionId: event.sessionId,
-          summary: event.summary,
-        };
-        break;
-      case "session_message_updated":
-        payload = {
-          type: "session_message_updated",
-          sessionId: event.sessionId,
-          message: event.message,
-        };
-        break;
-      default:
-        payload = {
-          type: "session_messages_appended",
-          sessionId: event.sessionId,
-          messages: event.messages,
-        };
-        break;
-    }
+        } =
+      event.type === "session_summary_updated"
+        ? {
+            type: "session_events_appended",
+            sessionId: event.sessionId,
+            events: [],
+            summary: event.summary,
+          }
+        : {
+            type: "session_events_appended",
+            sessionId: event.sessionId,
+            events: event.events,
+          };
     const data = `data: ${JSON.stringify(payload)}\n\n`;
     for (const client of this.sessionEventClients) {
       client.write(data);
@@ -566,21 +529,21 @@ export class BackendApp {
   }
 
   private recordSessionEvent(event: SessionStoreEvent): void {
-    if (event.type === "session_messages_appended") {
-      const prev = this.sessionEventStats.messagesAppended.get(event.sessionId) ?? 0;
-      this.sessionEventStats.messagesAppended.set(
+    if (event.type === "session_events_appended") {
+      const prev = this.sessionEventStats.eventsAppended.get(event.sessionId) ?? 0;
+      this.sessionEventStats.eventsAppended.set(
         event.sessionId,
-        prev + event.messages.length,
+        prev + event.events.length,
       );
     }
   }
 
   private getSessionEventStats(): {
-    messagesAppended: Record<SessionId, number>;
+    eventsAppended: Record<SessionId, number>;
     assistantChunkEmits: Record<SessionId, number>;
   } {
     return {
-      messagesAppended: Object.fromEntries(this.sessionEventStats.messagesAppended),
+      eventsAppended: Object.fromEntries(this.sessionEventStats.eventsAppended),
       assistantChunkEmits: Object.fromEntries(this.sessionEventStats.assistantChunkEmits),
     };
   }

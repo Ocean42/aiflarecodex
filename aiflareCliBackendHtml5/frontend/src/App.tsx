@@ -1,9 +1,9 @@
 import { useEffect, useRef } from "react";
 import type {
   CliSummary,
+  SessionEvent,
   SessionId,
   SessionSummary,
-  SessionMessage,
 } from "@aiflare/protocol";
 import { ProtoClient } from "./api/protoClient.js";
 import { useLocalState } from "./hooks/useLocalState.js";
@@ -23,7 +23,7 @@ import "./styles.css";
 type AppViewModel = {
   clis: Array<CliSummary>;
   sessions: Array<SessionSummary>;
-  sessionMessages: Map<SessionId, Array<SessionMessage>>;
+  sessionTimeline: Map<SessionId, Array<SessionEvent>>;
   form: SessionForm;
   logs: Array<LogEntry>;
   auth: AuthStatus | null;
@@ -71,7 +71,7 @@ export function App(): JSX.Element {
     const vm: AppViewModel = Object.assign(self, {
       clis: [],
       sessions: [],
-      sessionMessages: new Map<SessionId, Array<SessionMessage>>(),
+      sessionTimeline: new Map<SessionId, Array<SessionEvent>>(),
       form: {
         cliId: "",
         workdir: "/tmp",
@@ -83,7 +83,7 @@ export function App(): JSX.Element {
       sync() {
         vm.clis = Array.from(appState.clis.values());
         vm.sessions = Array.from(appState.sessions.values());
-        vm.sessionMessages = new Map(appState.sessionMessages);
+        vm.sessionTimeline = new Map(appState.sessionTimeline);
         vm.openSessionIds = [...appState.openSessionIds];
       },
       addLog(message: string) {
@@ -191,16 +191,16 @@ export function App(): JSX.Element {
         reRender();
         vm.addLog(`[session] opening ${sessionId}`);
         try {
-          const messages = await client.fetchSessionMessages(sessionId);
-          appState.setSessionMessages(sessionId, messages);
+          const timeline = await client.fetchSessionTimeline(sessionId);
+          appState.setSessionTimeline(sessionId, timeline);
           vm.sync();
           reRender();
           vm.addLog(
-            `[session] loaded ${messages.length} messages for ${sessionId}`,
+            `[session] loaded ${timeline.length} events for ${sessionId}`,
           );
         } catch (error) {
-          console.error("[frontend] failed to load session messages", error);
-          vm.addLog(`[session] failed to load messages for ${sessionId}`);
+          console.error("[frontend] failed to load session timeline", error);
+          vm.addLog(`[session] failed to load timeline for ${sessionId}`);
         }
       },
     });
@@ -229,14 +229,11 @@ export function App(): JSX.Element {
   useEffect(() => {
     const unsubscribe = client.subscribeSessionEvents((event) => {
       switch (event.type) {
-        case "session_messages_appended":
-          appState.appendSessionMessages(event.sessionId, event.messages);
-          break;
-        case "session_summary_updated":
-          appState.updateSession(event.summary);
-          break;
-        case "session_message_updated":
-          appState.updateSessionMessage(event.sessionId, event.message);
+        case "session_events_appended":
+          if (event.summary) {
+            appState.updateSession(event.summary);
+          }
+          appState.appendSessionTimeline(event.sessionId, event.events);
           break;
         default:
           break;
@@ -275,7 +272,7 @@ export function App(): JSX.Element {
           <SessionNavigator
             sessions={view.sessions}
             openSessionIds={view.openSessionIds}
-            messagesBySession={view.sessionMessages}
+            timelineBySession={view.sessionTimeline}
             onSelect={(sessionId) => void view.handleToggleSession(sessionId)}
           />
         </div>
@@ -284,7 +281,7 @@ export function App(): JSX.Element {
             client={client}
             sessions={view.sessions}
             openSessionIds={view.openSessionIds}
-            messagesBySession={view.sessionMessages}
+            timelineBySession={view.sessionTimeline}
           />
         </div>
       </div>

@@ -19,8 +19,15 @@ describe("appState selection", () => {
       status: "waiting",
       lastUpdated: new Date().toISOString(),
     });
-    state.setSessionMessages(sessionId, [
-      { id: "msg1", sessionId, role: "assistant", content: "Hallo", timestamp: new Date().toISOString() },
+    state.setSessionTimeline(sessionId, [
+      {
+        id: "evt1",
+        sessionId,
+        createdAt: new Date().toISOString(),
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "Hallo" }],
+      },
     ]);
     let notified = false;
     state.subscribe(() => {
@@ -30,7 +37,7 @@ describe("appState selection", () => {
     state.openSession(sessionId);
 
     expect(notified).toBe(true);
-    expect(state.sessionMessages.get(sessionId)).toHaveLength(1);
+    expect(state.sessionTimeline.get(sessionId)).toHaveLength(1);
     expect(state.openSessionIds).toContain(sessionId);
   });
 });

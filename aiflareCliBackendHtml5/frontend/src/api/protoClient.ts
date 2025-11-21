@@ -2,26 +2,17 @@ import type {
   BootstrapState,
   CliSummary,
   SessionId,
-  SessionMessage,
+  SessionEvent,
   SessionSummary,
 } from "@aiflare/protocol";
 import type { AuthStatus } from "../types/auth.js";
 
 export type SessionEventPayload =
   | {
-      type: "session_messages_appended";
+      type: "session_events_appended";
       sessionId: SessionId;
-      messages: Array<SessionMessage>;
-    }
-  | {
-      type: "session_summary_updated";
-      sessionId: SessionId;
-      summary: SessionSummary;
-    }
-  | {
-      type: "session_message_updated";
-      sessionId: SessionId;
-      message: SessionMessage;
+      events: Array<SessionEvent>;
+      summary?: SessionSummary;
     };
 
 export class ProtoClient {
@@ -73,21 +64,21 @@ export class ProtoClient {
     return response.json();
   }
 
-  async fetchSessionMessages(sessionId: SessionId): Promise<Array<SessionMessage>> {
+  async fetchSessionTimeline(sessionId: SessionId): Promise<Array<SessionEvent>> {
     const response = await fetch(
-      new URL(`/api/sessions/${sessionId}/messages`, this.baseUrl),
+      new URL(`/api/sessions/${sessionId}/timeline`, this.baseUrl),
     );
     if (!response.ok) {
-      throw new Error("Failed to load session messages");
+      throw new Error("Failed to load session timeline");
     }
-    return (await response.json()).messages;
+    return (await response.json()).timeline;
   }
 
-  async sendSessionMessage(
+  async sendSessionPrompt(
     sessionId: SessionId,
     content: string,
-  ): Promise<{ reply: string; messages: Array<SessionMessage> }> {
-    const response = await fetch(new URL(`/api/sessions/${sessionId}/messages`, this.baseUrl), {
+  ): Promise<{ reply: string; timeline: Array<SessionEvent> }> {
+    const response = await fetch(new URL(`/api/sessions/${sessionId}/timeline`, this.baseUrl), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ content }),
@@ -96,18 +87,6 @@ export class ProtoClient {
       throw new Error(`Failed to send message for session ${sessionId}`);
     }
     return response.json();
-  }
-
-  async fetchSessionHistory(sessionId: string): Promise<
-    Array<{ timestamp: string; event: string; data?: unknown }>
-  > {
-    const response = await fetch(
-      new URL(`/api/sessions/${sessionId}/history`, this.baseUrl),
-    );
-    if (!response.ok) {
-      throw new Error(`Failed to load history for session ${sessionId}`);
-    }
-    return (await response.json()).history;
   }
 
   subscribeSessionEvents(onEvent: (event: SessionEventPayload) => void): () => void {

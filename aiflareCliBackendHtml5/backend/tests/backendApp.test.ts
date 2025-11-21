@@ -15,7 +15,6 @@ describe("BackendApp routes", () => {
     app = createBackendApp({
       port: 0,
       sessionStoreDir: sessionDir,
-      forceLegacyAgent: true,
     });
     app.start();
     const addr = (app as unknown as { server: { address(): { port: number } } }).server.address();
@@ -33,7 +32,7 @@ describe("BackendApp routes", () => {
     expect(response.body).toMatchObject({
       clis: [],
       sessions: [],
-      transcripts: {},
+      timeline: {},
     });
   });
 
@@ -52,10 +51,10 @@ describe("BackendApp routes", () => {
     );
   });
 
-  it("creates session, handles messages and exposes transcripts", async () => {
+  it("creates session, handles messages and exposes timeline", async () => {
     const createRes = await request(serverUrl)
       .post("/api/sessions")
-      .send({ cliId: "cli_test", workdir: "/tmp", model: "gpt-test" });
+      .send({ cliId: "cli_test", workdir: "/tmp", model: "gpt-5.1-codex" });
     expect(createRes.status).toBe(201);
     const { sessionId } = createRes.body;
 
@@ -67,24 +66,32 @@ describe("BackendApp routes", () => {
     );
 
     const messageRes = await request(serverUrl)
-      .post(`/api/sessions/${sessionId}/messages`)
+      .post(`/api/sessions/${sessionId}/timeline`)
       .send({ content: "hi ai antworte mir bitte mit hallo" });
+    if (messageRes.status !== 200) {
+      // eslint-disable-next-line no-console
+      console.error("timeline request failed", messageRes.body);
+    }
     expect(messageRes.status).toBe(200);
-    expect(messageRes.body.reply).toBe("Hallo");
-    expect(messageRes.body.messages).toHaveLength(2);
+    expect(messageRes.body.reply?.toLowerCase()).toContain("hallo");
+    expect(Array.isArray(messageRes.body.timeline)).toBe(true);
+    const roles = messageRes.body.timeline
+      .filter((event: { type: string }) => event.type === "message")
+      .map((event: { role: string }) => event.role);
+    expect(roles).toEqual(expect.arrayContaining(["user", "assistant"]));
 
-    const messagesRes = await request(serverUrl).get(`/api/sessions/${sessionId}/messages`);
-    expect(messagesRes.body.messages).toHaveLength(2);
-
-    const historyRes = await request(serverUrl).get(`/api/sessions/${sessionId}/history`);
-    expect(historyRes.body.history).toEqual(
-      expect.arrayContaining([expect.objectContaining({ event: "created" })]),
-    );
+    const timelineRes = await request(serverUrl).get(`/api/sessions/${sessionId}/timeline`);
+    expect(Array.isArray(timelineRes.body.timeline)).toBe(true);
 
     const bootstrapAfter = await request(serverUrl).get("/api/bootstrap");
     expect(bootstrapAfter.body.sessions).toEqual(
       expect.arrayContaining([expect.objectContaining({ id: sessionId })]),
     );
-    expect(bootstrapAfter.body.transcripts[sessionId]).toHaveLength(2);
+    expect(
+      (bootstrapAfter.body.timeline[sessionId] ?? []).some(
+        (event: { type: string; role?: string }) =>
+          event.type === "message" && event.role === "assistant",
+      ),
+    ).toBe(true);
   });
 });

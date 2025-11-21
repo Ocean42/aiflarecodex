@@ -151,17 +151,15 @@ export async function expectLogCount(page: Page, minimum: number): Promise<void>
 }
 
 export function getAssistantMessages(page: Page, sessionId: string) {
-  return page
-    .locator(`[data-testid='session-messages-${sessionId}'] li`)
-    .filter({
-      has: page.locator("strong", { hasText: /^AI:/ }),
-    });
+  return page.locator(
+    `[data-testid='session-timeline-${sessionId}'] [data-event-type='message'][data-role='assistant']`,
+  );
 }
 
 export async function fetchSessionEventStats(
   request: APIRequestContext,
 ): Promise<{
-  messagesAppended?: Record<string, number>;
+  eventsAppended?: Record<string, number>;
   assistantChunkEmits?: Record<string, number>;
 }> {
   const res = await request.get(`${BACKEND_URL}/api/debug/session-event-stats`);

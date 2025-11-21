@@ -53,15 +53,8 @@ class AgentLoopRuntime {
     async runPrompt(prompt) {
         const message = createUserMessage(prompt);
         this.lastAssistantMessage = "";
-        const previousCwd = process.cwd();
-        try {
-            process.chdir(this.workdir);
-            console.log(`[agent-loop] session=${this.sessionId} prompt=${JSON.stringify(message)}`);
-            await this.agent.run([message], this.lastResponseId);
-        }
-        finally {
-            process.chdir(previousCwd);
-        }
+        console.log(`[agent-loop] session=${this.sessionId} prompt=${JSON.stringify(message)}`);
+        await this.agent.run([message], this.lastResponseId);
         console.log(`[agent-loop] session=${this.sessionId} reply=${JSON.stringify(this.lastAssistantMessage)}`);
         if (!this.lastAssistantMessage) {
             throw new Error("empty_agent_response");
