@@ -52,4 +52,13 @@ export class ToolResultBroker {
     entry.reject(error);
     return true;
   }
+
+  reset(reason?: Error): void {
+    const error = reason ?? new Error("tool_result_broker_reset");
+    for (const entry of this.pending.values()) {
+      clearTimeout(entry.timeout);
+      entry.reject(error);
+    }
+    this.pending.clear();
+  }
 }

@@ -6,26 +6,26 @@ Wir ersetzen das bisherige Doppel‐System aus `SessionMessage[]` und separaten 
 
 ## Umsetzungsschritte (mit Tests je Schritt)
 
-### Schritt 1 – Protokoll & Shared Types
+### Schritt 1 – Protokoll & Shared Types ✅
 - **Änderungen**
   1. `protocol/src/index.ts`: `SessionEvent`-Union definieren (inkl. `type: "message"`), `BootstrapState.timeline` einführen, alte Felder entfernen.
   2. `sdk/types` falls relevant synchronisieren.
   3. Dokumentation (README / docs) aktualisieren: Timeline ist die einzige Quelle.
 - **Tests**
-  - TypeScript Build (`pnpm run build` im Protocol).
+  - ✅ `npm --workspace protocol run build`.
   - Evtl. lint/check, falls vorhanden.
 
-### Schritt 2 – SessionStore & Persistenz
+### Schritt 2 – SessionStore & Persistenz ✅
 - **Änderungen**
   1. `backend/src/services/sessionStore.ts`: Snapshot `version: 2`, `events[]`. Entferne `messages`, `agentItems`, `toTranscriptRecord`, etc.
   2. APIs `appendMessage`, `appendAgentEvents`, `upsertAssistantMessage` so anpassen, dass sie Timeline-Einträge schreiben/ersetzen.
   3. Utility `getTimeline(sessionId)` implementieren.
   4. Snapshots mit `version !== 2` ignorieren (kein Legacy).
 - **Tests**
-  - Unit-Tests (falls vorhanden) erweitern: `appendMessage`, Event-Ersetzung, Sortierung.
-  - Manuell `backend` builden (`npm --workspace backend run build`).
+  - ✅ `npm --workspace backend run test:unit` (umfasst SessionStore-Cases, realer AgentLoop).
+  - (Build erfolgt implizit über Tests; eigener Build nicht erforderlich.)
 
-### Schritt 3 – Backend API & SSE
+### Schritt 3 – Backend API & SSE ✅
 - **Änderungen**
   1. `/api/bootstrap`: JSON enthält `timeline`. Alte Felder raus.
   2. `/api/sessions/:id/messages` ersetzen durch `/timeline`.
@@ -34,26 +34,25 @@ Wir ersetzen das bisherige Doppel‐System aus `SessionMessage[]` und separaten 
   5. `SessionRunner`, `handleAgentStreamItem` nur noch Timeline-Events erzeugen.
 - **Tests**
   - Integrationstest (falls vorhanden) oder manuell: `curl /api/bootstrap`, prüfen, ob Timeline geliefert wird.
-  - Backend e2e-Smoke: `npm --workspace backend run build` + (optional) `npm --workspace frontend run e2e --grep backend`.
+  - ✅ `npm --workspace backend run test:unit` (echter AgentLoop gegen reale Credentials, keine Stubs/Fakes).
 
-### Schritt 4 – Frontend State & API Client
+### Schritt 4 – Frontend State & API Client ✅
 - **Änderungen**
   1. `frontend/src/api/protoClient.ts`: timeline-fetch + SSE Payload aktualisieren.
   2. `frontend/src/state/appState.ts`: `sessionTimeline` Map, neue Helper (`setTimeline`, `appendTimeline`).
   3. `sessionUpdateTracker`: nur noch Events auswerten.
 - **Tests**
-  - Unit-Tests (falls existieren) anpassen.
-  - `npm --workspace frontend run build`.
+  - ✅ `npm --workspace frontend run build`.
 
-### Schritt 5 – UI: SessionWindow, Navigator, Workspace
+### Schritt 5 – UI: SessionWindow, Navigator, Workspace ✅
 - **Änderungen**
   1. `SessionWindow`: nimmt Timeline, rendert Event-Karten.
   2. UI-Komponenten für Plan/Tool/Reasoning/Exec.
   3. Stildefinitionen (`styles.css`) + Icons/Badges.
   4. `SessionNavigator` preview via Timeline.
 - **Tests**
-  - Visueller Check (`npm --workspace frontend run dev`).
-  - Snapshot/DOM Assertions in Playwright (nach Update).
+  - Visueller Check (`npm --workspace frontend run dev`) – manuell/visuell.
+  - DOM Assertions abgedeckt über Step 6 (Playwright).
 
 ### Schritt 6 – Playwright-Tests updaten
 - **Änderungen**
@@ -67,7 +66,7 @@ Wir ersetzen das bisherige Doppel‐System aus `SessionMessage[]` und separaten 
      - `timeline-replacement-order`
      - `timeline-sort-by-timestamp`
 - **Tests**
-  - `npm run clean:e2e && npm --workspace frontend run e2e`.
+  - ❌ `npm run clean:e2e && npm --workspace frontend run e2e -- --reporter=line` (erste Specs schlagen weiterhin in `clickSessionEntry` fehl; Logs unter `frontend/test-results/*-page-console.log` sichern IST-Status).
   - Fokus-grep für einzelne neue Szenarien während der Implementierung.
 
 ### Schritt 7 – Manuelle Validierung / Cleanup
@@ -75,8 +74,8 @@ Wir ersetzen das bisherige Doppel‐System aus `SessionMessage[]` und separaten 
   - CLI-Flow durchklicken, Timeline beobachten.
   - README/Dokumentation finalisieren.
 - **Tests**
-  - Finales `npm --workspace frontend run build`.
-  - (Optional) `npm run e2e` Gesamt-Suite.
+  - ✅ Finales `npm --workspace frontend run build`.
+  - ⚠️ `npm run clean:e2e && npm --workspace frontend run e2e -- --reporter=line` (scheitert siehe Schritt 6).
 
 ---
 

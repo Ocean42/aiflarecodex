@@ -35,6 +35,7 @@ export function createToolExecutorFactory(
       summary.id,
       options.enqueueAction,
       options.toolResultBroker,
+      summary.workdir,
     );
 }
 
@@ -44,6 +45,7 @@ class CliToolExecutor implements ToolExecutor {
     private readonly sessionId: string,
     private readonly enqueueAction: (cliId: CliId, payload: unknown) => void,
     private readonly resultBroker: ToolResultBroker,
+    private readonly workdir?: string,
   ) {}
 
   supports(): boolean {
@@ -64,6 +66,7 @@ class CliToolExecutor implements ToolExecutor {
       cliId: this.cliId,
       sessionId: this.sessionId,
       invocation: normalizedInvocation,
+      workdir: this.workdir,
     });
     return this.resultBroker.waitForResult(callId);
   }

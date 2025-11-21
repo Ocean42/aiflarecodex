@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./baseTest.js";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
@@ -8,6 +8,7 @@ import {
   clickSessionEntry,
   sendMessageAndExpectAssistant,
   resetBackendState,
+  ensureCliVisible,
 } from "./utils.js";
 
 const FRONTEND_ENTRY_URL = buildFrontendEntryUrl();
@@ -33,6 +34,7 @@ test("session can read the entire bigText file from workspace", async ({ page, r
   await resetBackendState(request);
   await waitForBackendCli(request);
   await page.goto(FRONTEND_ENTRY_URL);
+  await ensureCliVisible(page, 1);
 
   await page.getByLabel("Workdir:").fill(WORKSPACE_DIR);
   await page.getByRole("button", { name: "Create Session" }).click();

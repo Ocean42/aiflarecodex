@@ -228,6 +228,7 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     const unsubscribe = client.subscribeSessionEvents((event) => {
+      console.log("[frontend][sse]", event);
       switch (event.type) {
         case "session_events_appended":
           if (event.summary) {

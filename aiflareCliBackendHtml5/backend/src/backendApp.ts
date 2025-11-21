@@ -63,6 +63,7 @@ export class BackendApp {
     eventsAppended: new Map<SessionId, number>(),
     assistantChunkEmits: new Map<SessionId, number>(),
   };
+  private resetInFlight: Promise<void> | null = null;
 
   constructor(private readonly options?: BackendAppOptions) {
     initializeAuthState();
@@ -270,6 +271,7 @@ export class BackendApp {
           title,
         };
         this.sessionStore.createSession(summary);
+        this.log("Session created", { sessionId, cliId, workdir, model });
         const cli = this.clis.get(cliId);
         if (cli) {
           cli.sessionCount = this.countSessionsForCli(cliId);
@@ -310,10 +312,8 @@ export class BackendApp {
       }
     });
 
-    app.post("/api/debug/reset", (_req, res) => {
-      this.sessionStore.reset();
-      this.sessionEventStats.eventsAppended.clear();
-      this.sessionEventStats.assistantChunkEmits.clear();
+    app.post("/api/debug/reset", async (_req, res) => {
+      await this.resetBackendState();
       res.json({ status: "ok" });
     });
 
@@ -458,6 +458,27 @@ export class BackendApp {
     });
   }
 
+  private async resetBackendState(): Promise<void> {
+    if (this.resetInFlight) {
+      await this.resetInFlight;
+      return;
+    }
+    this.resetInFlight = (async () => {
+      this.log("Resetting backend state");
+      await this.sessionRunner.resetAll();
+      this.actionQueue.length = 0;
+      this.toolResultBroker.reset(new Error("backend_reset"));
+      this.sessionStore.reset();
+      this.sessionEventStats.eventsAppended.clear();
+      this.sessionEventStats.assistantChunkEmits.clear();
+    })();
+    try {
+      await this.resetInFlight;
+    } finally {
+      this.resetInFlight = null;
+    }
+  }
+
   private stripCliToken(cli: CliRecord): CliSummary {
     const { token: _token, ...summary } = cli;
     return summary;
@@ -483,17 +504,25 @@ export class BackendApp {
     actionId: string = `act_${randomUUID()}`,
   ): void {
     const sessionId = (payload as { sessionId?: SessionId })?.sessionId;
+    let workdir: string | undefined = (payload as { workdir?: string })?.workdir;
+    if (!workdir && sessionId) {
+      workdir = this.sessionStore.get(sessionId)?.getSummary().workdir;
+    }
+    const normalizedPayload =
+      workdir && workdir.length > 0 && payload && typeof payload === "object"
+        ? { ...(payload as Record<string, unknown>), workdir }
+        : payload;
     this.actionQueue.push({
       actionId,
       cliId,
       sessionId,
-      payload,
+      payload: normalizedPayload,
       delivered: false,
     });
     this.log("Action queued", {
       cliId,
       actionId,
-      type: (payload as { type?: string })?.type ?? "unknown",
+      type: (normalizedPayload as { type?: string })?.type ?? "unknown",
     });
   }
 

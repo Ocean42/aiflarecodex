@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./baseTest.js";
 import {
   buildFrontendEntryUrl,
   waitForBackendCli,
@@ -6,6 +6,7 @@ import {
   clickSessionEntry,
   sendMessageAndExpectAssistant,
   resetBackendState,
+  ensureCliVisible,
 } from "./utils.js";
 
 const FRONTEND_ENTRY_URL = buildFrontendEntryUrl();
@@ -14,6 +15,7 @@ test("single session responds with Hallo", async ({ page, request }) => {
   await resetBackendState(request);
   await waitForBackendCli(request);
   await page.goto(FRONTEND_ENTRY_URL);
+  await ensureCliVisible(page, 1);
 
   await page.getByRole("button", { name: "Create Session" }).click();
   await waitForSessionCount(request, 1);

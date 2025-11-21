@@ -95,8 +95,8 @@ class SessionState {
         content: segments,
         metadata: options?.metadata,
         state: options?.state,
-        id: options?.id,
-      },
+        id: options?.id ?? `evt_${randomUUID()}`,
+      } as SessionEventDraft,
     ]) as Array<SessionMessageEvent>;
     return event;
   }
@@ -251,7 +251,7 @@ export class SessionStore {
         state: options?.state,
         metadata: options?.metadata,
         id: externalId,
-      },
+      } as SessionEventDraft,
     ])[0] as SessionMessageEvent;
     this.emit({
       type: "session_events_appended",
@@ -284,8 +284,11 @@ export class SessionStore {
   updateSummary(
     sessionId: SessionId,
     partial: Partial<SessionSummary>,
-  ): SessionSummary {
-    const session = this.requireSession(sessionId);
+  ): SessionSummary | undefined {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return undefined;
+    }
     session.updateSummary(partial);
     const summary = session.getSummary();
     this.emit({

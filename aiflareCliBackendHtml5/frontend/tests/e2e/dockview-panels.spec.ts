@@ -1,4 +1,5 @@
-import { test, expect, type Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
+import { test, expect } from "./baseTest.js";
 import {
   buildFrontendEntryUrl,
   waitForBackendCli,
@@ -6,6 +7,7 @@ import {
   clickSessionEntry,
   toggleSessionFromNavigator,
   resetBackendState,
+  ensureCliVisible,
 } from "./utils.js";
 
 const FRONTEND_ENTRY_URL = buildFrontendEntryUrl();
@@ -24,6 +26,7 @@ test("session navigator toggles dockview panels", async ({ page, request }) => {
   await resetBackendState(request);
   await waitForBackendCli(request);
   await page.goto(FRONTEND_ENTRY_URL);
+  await ensureCliVisible(page, 1);
 
   // Create two sessions and open their panels
   await page.getByRole("button", { name: "Create Session" }).click();

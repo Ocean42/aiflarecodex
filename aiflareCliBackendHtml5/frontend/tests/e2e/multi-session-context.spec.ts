@@ -1,4 +1,5 @@
-import { test, expect, type Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
+import { test, expect } from "./baseTest.js";
 import {
   buildFrontendEntryUrl,
   waitForBackendCli,
@@ -7,6 +8,7 @@ import {
   sendMessageAndExpectAssistant,
   expectLatestAssistantMessage,
   resetBackendState,
+  ensureCliVisible,
 } from "./utils.js";
 
 const FRONTEND_ENTRY_URL = buildFrontendEntryUrl();
@@ -15,6 +17,7 @@ test("sessions keep independent context", async ({ page, request }) => {
   await resetBackendState(request);
   await waitForBackendCli(request);
   await page.goto(FRONTEND_ENTRY_URL);
+  await ensureCliVisible(page, 1);
 
   // Session 1 setup
   await page.getByRole("button", { name: "Create Session" }).click();

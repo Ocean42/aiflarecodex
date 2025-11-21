@@ -1,4 +1,6 @@
-import { expect, type APIRequestContext, type Page } from "@playwright/test";
+import { expect, type APIRequestContext, type Page, type TestInfo } from "@playwright/test";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 
 const BACKEND_PORT = process.env["E2E_BACKEND_PORT"] ?? "4123";
 const FRONTEND_PORT = process.env["E2E_FRONTEND_PORT"] ?? "5174";
@@ -68,12 +70,23 @@ export async function clickSessionEntry(
   page: Page,
   sessionId: string,
 ): Promise<void> {
-  const button = page.getByTestId(`session-select-${sessionId}`);
-  await expect(button).toBeVisible({ timeout: 15_000 });
   const tab = page
     .locator('[data-testid="session-workspace"] .dv-tab')
     .filter({ hasText: sessionId });
   const input = page.getByTestId(`session-input-${sessionId}`);
+  let inputVisible = false;
+  try {
+    inputVisible = await input.isVisible({ timeout: 500 });
+  } catch {
+    inputVisible = false;
+  }
+  if (inputVisible) {
+    return;
+  }
+  const sessionList = page.getByTestId("session-list");
+  await expect(sessionList).toBeVisible({ timeout: 15_000 });
+  const button = page.getByTestId(`session-select-${sessionId}`);
+  await expect(button).toBeVisible({ timeout: 15_000 });
   if ((await tab.count()) === 0) {
     await button.click();
     await expect(tab).toBeVisible({ timeout: 15_000 });
@@ -92,25 +105,46 @@ export async function toggleSessionFromNavigator(
 }
 
 export async function ensureCliVisible(page: Page, expectedCount: number): Promise<void> {
-  const listLocator = page.locator("[data-testid='cli-list'] li");
-  const timeoutMs = 15_000;
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const count = await listLocator.count();
-    if (count >= expectedCount) {
-      break;
-    }
-    await page.waitForTimeout(200);
-  }
-  const finalCount = await listLocator.count();
-  if (finalCount < expectedCount) {
-    throw new Error(`Expected at least ${expectedCount} CLI entries, saw ${finalCount}`);
-  }
-  const cliSelect = page.locator('section:has-text("Sessions") label:has-text("CLI:") select');
-  await cliSelect.locator('option:not([value=""])').first().waitFor({
-    state: "attached",
-    timeout: 15_000,
+  const cliSelect = page.locator('section:has-text("New Session") select');
+  await expect(cliSelect).toBeVisible({ timeout: 15_000 });
+  await expect
+    .poll(
+      async () =>
+        await cliSelect
+          .locator("option")
+          .evaluateAll((nodes) =>
+            nodes.filter(
+              (node) =>
+                "value" in node &&
+                typeof (node as HTMLSelectElement).value === "string" &&
+                (node as HTMLSelectElement).value.trim().length > 0,
+            ).length,
+          ),
+      { timeout: 15_000 },
+    )
+    .toBeGreaterThanOrEqual(expectedCount);
+}
+
+export function attachPageConsoleLogger(
+  page: Page,
+  info: TestInfo,
+  label: string,
+): void {
+  const logPath = info.outputPath(`${label}-page-console.log`);
+  mkdirSync(dirname(logPath), { recursive: true });
+  page.on("console", (message) => {
+    const entry = `[${new Date().toISOString()}][${message.type()}] ${message.text()}\n`;
+    appendFileSync(logPath, entry);
   });
+}
+
+export function writeTestLog(info: TestInfo, message: string): void {
+  const logPath = info.outputPath(`test.log`);
+  mkdirSync(dirname(logPath), { recursive: true });
+  appendFileSync(
+    logPath,
+    `[${new Date().toISOString()}][${info.status ?? "running"}] ${message}\n`,
+  );
 }
 
 export async function registerCli(

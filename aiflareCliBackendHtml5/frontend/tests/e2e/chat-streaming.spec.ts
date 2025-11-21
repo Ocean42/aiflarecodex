@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./baseTest.js";
 import {
   buildFrontendEntryUrl,
   waitForBackendCli,
@@ -7,6 +7,7 @@ import {
   resetBackendState,
   expectLatestAssistantMessage,
   getAssistantChunkCount,
+  ensureCliVisible,
 } from "./utils.js";
 
 const FRONTEND_ENTRY_URL = buildFrontendEntryUrl();
@@ -18,6 +19,7 @@ test("frontend receives the same number of message updates as backend stream chu
   await resetBackendState(request);
   await waitForBackendCli(request);
   await page.goto(FRONTEND_ENTRY_URL);
+  await ensureCliVisible(page, 1);
 
   await page.getByRole("button", { name: "Create Session" }).click();
   const sessions = await waitForSessionCount(request, 1);

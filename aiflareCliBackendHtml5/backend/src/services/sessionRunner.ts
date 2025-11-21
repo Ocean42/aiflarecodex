@@ -17,6 +17,8 @@ type QueueItem = {
 class SessionRunner {
   private readonly queue: Array<QueueItem> = [];
   private processing = false;
+  private readonly activeRuns = new Set<Promise<void>>();
+  private disposed = false;
   private readonly runtime: SessionRuntime;
 
   constructor(
@@ -28,14 +30,29 @@ class SessionRunner {
   }
 
   submitPrompt(prompt: string): Promise<{ reply: string }> {
+    if (this.disposed) {
+      return Promise.reject<{ reply: string }>(
+        new Error(`session ${this.sessionId} is shutting down`),
+      );
+    }
     return new Promise((resolve, reject) => {
       this.queue.push({ prompt, resolve, reject });
       void this.process();
     });
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
+    if (this.disposed) {
+      await this.waitForActiveRuns();
+      return;
+    }
+    this.disposed = true;
+    const error = new Error(`session ${this.sessionId} is shutting down`);
+    while (this.queue.length > 0) {
+      this.queue.shift()?.reject(error);
+    }
     this.runtime.dispose?.();
+    await this.waitForActiveRuns();
   }
 
   private async process(): Promise<void> {
@@ -48,12 +65,19 @@ class SessionRunner {
       if (!item) {
         break;
       }
+      let runPromise: Promise<void> | null = null;
       try {
-        await this.runSinglePrompt(item);
+        runPromise = this.runSinglePrompt(item);
+        this.activeRuns.add(runPromise);
+        await runPromise;
       } catch (error) {
         const err =
           error instanceof Error ? error : new Error(String(error));
         item.reject(err);
+      } finally {
+        if (runPromise) {
+          this.activeRuns.delete(runPromise);
+        }
       }
     }
     this.processing = false;
@@ -74,6 +98,14 @@ class SessionRunner {
       this.store.updateSummary(this.sessionId, { status: "waiting" });
     }
   }
+
+  private async waitForActiveRuns(): Promise<void> {
+    if (this.activeRuns.size === 0) {
+      return;
+    }
+    await Promise.allSettled(Array.from(this.activeRuns));
+    this.activeRuns.clear();
+  }
 }
 
 export class SessionRunnerService {
@@ -89,12 +121,18 @@ export class SessionRunnerService {
     return runner.submitPrompt(prompt);
   }
 
-  reset(sessionId: SessionId): void {
+  async reset(sessionId: SessionId): Promise<void> {
     const runner = this.runners.get(sessionId);
     if (runner) {
-      runner.dispose();
       this.runners.delete(sessionId);
+      await runner.dispose();
     }
+  }
+
+  async resetAll(): Promise<void> {
+    const runners = Array.from(this.runners.values());
+    this.runners.clear();
+    await Promise.allSettled(runners.map((runner) => runner.dispose()));
   }
 
   private ensureRunner(sessionId: SessionId): SessionRunner {

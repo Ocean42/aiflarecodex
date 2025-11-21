@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./baseTest.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -8,6 +8,7 @@ import {
   clickSessionEntry,
   sendMessageAndExpectAssistant,
   resetBackendState,
+  ensureCliVisible,
 } from "./utils.js";
 
 const FRONTEND_ENTRY_URL = buildFrontendEntryUrl();
@@ -20,6 +21,7 @@ test("view_image tool identifies katze picture", async ({ page, request }) => {
   await resetBackendState(request);
   await waitForBackendCli(request);
   await page.goto(FRONTEND_ENTRY_URL);
+  await ensureCliVisible(page, 1);
 
   await page.getByLabel("Workdir:").fill(katzeWorkdir);
   await page.getByRole("button", { name: "Create Session" }).click();

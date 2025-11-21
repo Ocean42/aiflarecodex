@@ -39,6 +39,16 @@ export function SessionNavigator({
   timelineBySession,
   onSelect,
 }: Props): JSX.Element {
+  console.log(
+    "[frontend][session-navigator]",
+    JSON.stringify(
+      sessions.map((session) => ({
+        id: session.id,
+        status: session.status,
+        timelineEvents: timelineBySession.get(session.id)?.length ?? 0,
+      })),
+    ),
+  );
   if (sessions.length === 0) {
     return (
       <section aria-label="Sessions">

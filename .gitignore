@@ -97,3 +97,5 @@ aiflareCliBackendHtml5/tmp/cli-e2e-config.json
 /aiflareCliBackendHtml5/backend/test-credentials
 /aiflareCliBackendHtml5/backend/log
 /aiflareCliBackendHtml5/examples/log
+/aiflareCliBackendHtml5/frontend/playwright-report
+/aiflareCliBackendHtml5/frontend/playwright-report-chat-basic
