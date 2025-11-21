@@ -1,20 +1,15 @@
 // @ts-nocheck
-import { homedir } from "os";
-import { join } from "path";
-/**
- * Resolve the Codey home directory.
- *
- * Always `~/.codey` – no environment overrides or fallbacks.
- */
+import path from "node:path";
+import { DataDirectory } from "./dataDirectory.js";
 export function getCodexHomeDir() {
-    return join(homedir(), ".codey");
+    return DataDirectory.getPath();
 }
 export function getAuthFilePath() {
-    return join(getCodexHomeDir(), "auth.json");
+    return DataDirectory.resolve("auth.json");
 }
 export function getSessionsRoot() {
-    return join(getCodexHomeDir(), "sessions");
+    return DataDirectory.resolve("sessions");
 }
 export function getHistoryFilePath() {
-    return join(getCodexHomeDir(), "history.json");
+    return DataDirectory.resolve("history.json");
 }

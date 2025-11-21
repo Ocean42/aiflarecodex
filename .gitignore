@@ -90,6 +90,7 @@ CHANGELOG.ignore.md
 aiflareCliBackendHtml5/frontend/tmp/auth-state.json
 aiflareCliBackendHtml5/tmp/cli-e2e-config.json
 /aiflareCliBackendHtml5/tmp
+/aiflareCliBackendHtml5/backend/data
 /aiflareCliBackendHtml5/frontend/test-results
 /aiflareCliBackendHtml5/frontend/tmp
 /aiflareCliBackendHtml5/backend/tmp

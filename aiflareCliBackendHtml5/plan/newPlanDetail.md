@@ -7,7 +7,7 @@ Die folgenden Schritte sind so sortiert, dass jede Ausbaustufe testbar bleibt. A
 ## 1. Backend-Domäne & Persistenzbasis
 1. [x] **SessionStore + SessionState implementieren**
    - Datenstruktur kapselt Transcript (User/Assistant-Items, Tool-Ausgaben), Status (`waiting|running|streaming|error`), aktives Modell, Pending-User-Messages und In-Flight-AgentItems.
-   - Speicherung als In-Memory-Map mit optionalem File-Checkpoint (JSON pro Session in `backend/tmp/sessions/<id>.json`), damit Neustarts Transkripte behalten.
+   - Speicherung als In-Memory-Map mit optionalem File-Checkpoint (JSON pro Session in `backend/data/sessions/<id>.json`), damit Neustarts Transkripte behalten.
    - Design-Entscheidung: SessionState besitzt Methoden `appendMessage`, `appendAgentItem`, `updateStatus`. BackendApp ruft nur diese API, damit AgentLoop-Runner und REST-Routen konsistent bleiben.
    - **Tests:** Vitest-Klassentests (z. B. `npx vitest run SessionState.test.ts` im `backend`-Ordner). Setup erzeugt echte `SessionState`-Instanz, ruft Methoden direkt auf (kein REST). Persistenzteil schreibt temporäre Datei, die anschließend via `JSON.parse` verifiziert wird.
 2. [x] **ActiveSessionRegistry**

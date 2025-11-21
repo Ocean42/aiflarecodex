@@ -3,8 +3,6 @@ import cors from "cors";
 import type { Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
-import { join } from "node:path";
 import type {
   BootstrapState,
   CliId,
@@ -31,6 +29,7 @@ import {
   createToolExecutorFactory,
   type ToolExecutorFactory,
 } from "./services/toolExecutorFactory.js";
+import { getAuthFilePath, getSessionsRoot } from "./utils/codexHome.js";
 
 type CliRecord = CliSummary & { token: string };
 
@@ -65,7 +64,7 @@ export class BackendApp {
     initializeAuthState();
     this.port = options?.port ?? Number(process.env["BACKEND_PORT"] ?? "4123");
     this.sessionStore = new SessionStore({
-      persistDir: options?.sessionStoreDir ?? join(process.cwd(), "tmp", "sessions"),
+      persistDir: options?.sessionStoreDir ?? getSessionsRoot(),
     });
     this.sessionStore.subscribe((event) => this.broadcastSessionEvent(event));
     this.toolExecutorFactory = createToolExecutorFactory({
@@ -115,10 +114,7 @@ export class BackendApp {
   }
 
   private resolveAuthPath(): string {
-    return (
-      process.env["CODEX_AUTH_FILE"] ??
-      join(os.homedir(), ".codey", "auth.json")
-    );
+    return getAuthFilePath();
   }
 
   private hasAgentCredentials(authPath: string): boolean {
