@@ -7,6 +7,10 @@ export const BACKEND_URL =
 export const FRONTEND_URL =
   process.env["E2E_FRONTEND_URL"] ?? `http://127.0.0.1:${FRONTEND_PORT}`;
 
+export async function resetBackendState(request: APIRequestContext): Promise<void> {
+  await request.post(`${BACKEND_URL}/api/debug/reset`);
+}
+
 export function buildFrontendEntryUrl(): string {
   const normalizedFrontend = FRONTEND_URL.endsWith("/")
     ? FRONTEND_URL.slice(0, -1)
@@ -66,13 +70,25 @@ export async function clickSessionEntry(
 ): Promise<void> {
   const button = page.getByTestId(`session-select-${sessionId}`);
   await expect(button).toBeVisible({ timeout: 15_000 });
-  const box = await button.boundingBox();
-  if (!box) {
-    throw new Error(`Unable to determine bounding box for session ${sessionId}`);
+  const tab = page
+    .locator('[data-testid="session-workspace"] .dv-tab')
+    .filter({ hasText: sessionId });
+  const input = page.getByTestId(`session-input-${sessionId}`);
+  if ((await tab.count()) === 0) {
+    await button.click();
+    await expect(tab).toBeVisible({ timeout: 15_000 });
   }
-  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-  const header = page.locator("[data-testid='session-window'] h2");
-  await expect(header).toContainText(sessionId, { timeout: 15_000 });
+  await tab.click();
+  await expect(input).toBeVisible({ timeout: 15_000 });
+}
+
+export async function toggleSessionFromNavigator(
+  page: Page,
+  sessionId: string,
+): Promise<void> {
+  const button = page.getByTestId(`session-select-${sessionId}`);
+  await expect(button).toBeVisible({ timeout: 15_000 });
+  await button.click();
 }
 
 export async function ensureCliVisible(page: Page, expectedCount: number): Promise<void> {
@@ -134,9 +150,9 @@ export async function expectLogCount(page: Page, minimum: number): Promise<void>
   throw new Error(`Expected at least ${minimum} log entries`);
 }
 
-export function getAssistantMessages(page: Page) {
+export function getAssistantMessages(page: Page, sessionId: string) {
   return page
-    .locator("[data-testid='session-messages'] li")
+    .locator(`[data-testid='session-messages-${sessionId}'] li`)
     .filter({
       has: page.locator("strong", { hasText: /^AI:/ }),
     });
@@ -144,14 +160,16 @@ export function getAssistantMessages(page: Page) {
 
 export async function sendMessageAndExpectAssistant(
   page: Page,
+  sessionId: string,
   message: string,
   expected: string | RegExp,
-  options?: { timeout?: number },
-): Promise<void> {
-  const assistantMessages = getAssistantMessages(page);
+  options?: { timeout?: number; captureText?: boolean },
+): Promise<{ text: string } | void> {
+  const assistantMessages = getAssistantMessages(page, sessionId);
   const initialCount = await assistantMessages.count();
-  await page.getByTestId("session-input").fill(message);
-  await page.getByTestId("session-send").click();
+  const input = page.getByTestId(`session-input-${sessionId}`);
+  await input.fill(message);
+  await page.getByTestId(`session-send-${sessionId}`).click();
   const timeout = options?.timeout ?? 15_000;
   const newCount = await waitForAssistantCount(page, assistantMessages, initialCount + 1, timeout);
   const target = assistantMessages.nth(newCount - 1);
@@ -160,14 +178,19 @@ export async function sendMessageAndExpectAssistant(
   } else {
     await expect(target).toHaveText(expected, { timeout });
   }
+  if (options?.captureText) {
+    const text = await target.innerText();
+    return { text };
+  }
 }
 
 export async function expectLatestAssistantMessage(
   page: Page,
+  sessionId: string,
   expected: string | RegExp,
   options?: { timeout?: number },
 ): Promise<void> {
-  const assistantMessages = getAssistantMessages(page);
+  const assistantMessages = getAssistantMessages(page, sessionId);
   const timeout = options?.timeout ?? 10_000;
   await expect(assistantMessages.first()).toBeVisible({ timeout });
   const target = assistantMessages.last();

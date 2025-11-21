@@ -14,7 +14,7 @@ export class AppState {
   readonly sessions = new Map<SessionId, SessionSummary>();
   readonly actions: Array<{ actionId: string; cliId: CliId; sessionId?: SessionId; payload: unknown }> = [];
   readonly sessionMessages = new Map<SessionId, Array<SessionMessage>>();
-  activeSessionId: SessionId | null = null;
+  readonly openSessionIds: Array<SessionId> = [];
   private readonly listeners = new Set<Listener>();
 
   subscribe(listener: Listener): () => void {
@@ -51,12 +51,27 @@ export class AppState {
     this.notify();
   }
 
-  setActiveSession(sessionId: SessionId | null): void {
-    this.activeSessionId = sessionId;
+  openSession(sessionId: SessionId): void {
+    if (!this.sessions.has(sessionId)) {
+      return;
+    }
+    if (!this.openSessionIds.includes(sessionId)) {
+      this.openSessionIds.push(sessionId);
+      this.notify();
+    }
+  }
+
+  closeSession(sessionId: SessionId): void {
+    const index = this.openSessionIds.indexOf(sessionId);
+    if (index === -1) {
+      return;
+    }
+    this.openSessionIds.splice(index, 1);
     this.notify();
   }
 
   setBootstrap(state: BootstrapState): void {
+    const previouslyOpen = new Set(this.openSessionIds);
     this.clis.clear();
     state.clis.forEach((cli) => this.clis.set(cli.id, cli));
     this.sessions.clear();
@@ -67,8 +82,14 @@ export class AppState {
       const messages = state.transcripts[session.id] ?? [];
       this.sessionMessages.set(session.id, messages);
     });
-    if (!this.activeSessionId || !this.sessions.has(this.activeSessionId)) {
-      this.activeSessionId = state.sessions[0]?.id ?? null;
+    this.openSessionIds.splice(0, this.openSessionIds.length);
+    for (const sessionId of previouslyOpen) {
+      if (this.sessions.has(sessionId)) {
+        this.openSessionIds.push(sessionId);
+      }
+    }
+    if (this.openSessionIds.length === 0 && state.sessions.length > 0) {
+      this.openSessionIds.push(state.sessions[0]!.id);
     }
     this.notify();
   }

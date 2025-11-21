@@ -13,10 +13,12 @@ import {
   type SessionForm,
 } from "./components/SessionFormSection.js";
 import { AuthPanel } from "./components/AuthPanel.js";
-import { SessionWindow } from "./components/SessionWindow.js";
 import { LogPanel, type LogEntry } from "./components/LogPanel.js";
 import type { AuthStatus } from "./types/auth.js";
 import { SessionNavigator } from "./components/SessionNavigator.js";
+import { SessionWorkspace } from "./components/SessionWorkspace.js";
+import "dockview/dist/styles/dockview.css";
+import "./styles.css";
 
 type AppViewModel = {
   clis: Array<CliSummary>;
@@ -25,16 +27,18 @@ type AppViewModel = {
   form: SessionForm;
   logs: Array<LogEntry>;
   auth: AuthStatus | null;
-  activeSessionId: SessionId | null;
+  openSessionIds: Array<SessionId>;
   sync(): void;
   handleCreateSession(): Promise<void>;
   handleFormChange(field: keyof SessionForm, value: string): void;
-  handleSelectSession(sessionId: SessionId): Promise<void>;
+  handleToggleSession(sessionId: SessionId): Promise<void>;
   addLog(message: string): void;
   refreshBackend(): Promise<void>;
   refreshAuthStatus(): Promise<void>;
   handleLogin(cliId: string): Promise<void>;
   handleLogout(): Promise<void>;
+  handleCloseSession(sessionId: SessionId): void;
+  openSession(sessionId: SessionId): Promise<void>;
 };
 
 function resolveBackendUrl(): string {
@@ -75,12 +79,12 @@ export function App(): JSX.Element {
       },
       logs: [],
       auth: null,
-      activeSessionId: null as SessionId | null,
+      openSessionIds: [],
       sync() {
         vm.clis = Array.from(appState.clis.values());
         vm.sessions = Array.from(appState.sessions.values());
         vm.sessionMessages = new Map(appState.sessionMessages);
-        vm.activeSessionId = appState.activeSessionId;
+        vm.openSessionIds = [...appState.openSessionIds];
       },
       addLog(message: string) {
         const entry: LogEntry = {
@@ -108,32 +112,18 @@ export function App(): JSX.Element {
         });
         vm.addLog(`[session] created ${sessionId}`);
         await refreshFromBackend();
-        appState.setActiveSession(sessionId);
-        await vm.handleSelectSession(sessionId);
+        await vm.openSession(sessionId);
       },
       handleFormChange(field: keyof SessionForm, value: string) {
         vm.form = { ...vm.form, [field]: value };
         reRender();
       },
-      async handleSelectSession(sessionId: SessionId) {
-        vm.activeSessionId = sessionId;
-        reRender();
-        appState.setActiveSession(sessionId);
-        vm.sync();
-        reRender();
-        vm.addLog(`[session] selecting ${sessionId}`);
-        try {
-          const messages = await client.fetchSessionMessages(sessionId);
-          appState.setSessionMessages(sessionId, messages);
-          vm.sync();
-          reRender();
-          vm.addLog(
-            `[session] loaded ${messages.length} messages for ${sessionId}`,
-          );
-        } catch (error) {
-          console.error("[frontend] failed to load session messages", error);
-          vm.addLog(`[session] failed to load messages for ${sessionId}`);
+      async handleToggleSession(sessionId: SessionId) {
+        if (vm.openSessionIds.includes(sessionId)) {
+          vm.handleCloseSession(sessionId);
+          return;
         }
+        await vm.openSession(sessionId);
       },
       async refreshAuthStatus() {
         try {
@@ -185,6 +175,33 @@ export function App(): JSX.Element {
       },
       refreshBackend: async () => {
         await refreshFromBackend();
+      },
+      handleCloseSession(sessionId: SessionId) {
+        if (!vm.openSessionIds.includes(sessionId)) {
+          return;
+        }
+        vm.addLog(`[session] closing ${sessionId}`);
+        appState.closeSession(sessionId);
+        vm.sync();
+        reRender();
+      },
+      async openSession(sessionId: SessionId) {
+        appState.openSession(sessionId);
+        vm.sync();
+        reRender();
+        vm.addLog(`[session] opening ${sessionId}`);
+        try {
+          const messages = await client.fetchSessionMessages(sessionId);
+          appState.setSessionMessages(sessionId, messages);
+          vm.sync();
+          reRender();
+          vm.addLog(
+            `[session] loaded ${messages.length} messages for ${sessionId}`,
+          );
+        } catch (error) {
+          console.error("[frontend] failed to load session messages", error);
+          vm.addLog(`[session] failed to load messages for ${sessionId}`);
+        }
       },
     });
 
@@ -254,20 +271,17 @@ export function App(): JSX.Element {
           />
           <SessionNavigator
             sessions={view.sessions}
-            activeSessionId={view.activeSessionId}
+            openSessionIds={view.openSessionIds}
             messagesBySession={view.sessionMessages}
-            onSelect={(sessionId) => void view.handleSelectSession(sessionId)}
+            onSelect={(sessionId) => void view.handleToggleSession(sessionId)}
           />
         </div>
         <div className="session-window-panel">
-          <SessionWindow
+          <SessionWorkspace
             client={client}
-            activeSessionId={view.activeSessionId}
-            messages={
-              view.activeSessionId
-                ? view.sessionMessages.get(view.activeSessionId) ?? []
-                : []
-            }
+            sessions={view.sessions}
+            openSessionIds={view.openSessionIds}
+            messagesBySession={view.sessionMessages}
           />
         </div>
       </div>

@@ -5,11 +5,13 @@ import {
   waitForSessionCount,
   clickSessionEntry,
   sendMessageAndExpectAssistant,
+  resetBackendState,
 } from "./utils.js";
 
 const FRONTEND_ENTRY_URL = buildFrontendEntryUrl();
 
 test("single session responds with Hallo", async ({ page, request }) => {
+  await resetBackendState(request);
   await waitForBackendCli(request);
   await page.goto(FRONTEND_ENTRY_URL);
 
@@ -21,6 +23,7 @@ test("single session responds with Hallo", async ({ page, request }) => {
 
   await sendMessageAndExpectAssistant(
     page,
+    sessionId,
     "hi ai antworte mir bitte mit hallo",
     /hallo/i,
   );

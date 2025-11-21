@@ -6,7 +6,7 @@ import type {
 
 type Props = {
   sessions: Array<SessionSummary>;
-  activeSessionId: SessionId | null;
+  openSessionIds: Array<SessionId>;
   messagesBySession: Map<SessionId, Array<SessionMessage>>;
   onSelect(sessionId: SessionId): void;
 };
@@ -30,7 +30,7 @@ function getLastMessagePreview(
 
 export function SessionNavigator({
   sessions,
-  activeSessionId,
+  openSessionIds,
   messagesBySession,
   onSelect,
 }: Props): JSX.Element {
@@ -48,7 +48,7 @@ export function SessionNavigator({
       <h2>Sessions</h2>
       <ul data-testid="session-list">
         {sessions.map((session) => {
-          const isActive = session.id === activeSessionId;
+          const isActive = openSessionIds.includes(session.id);
           const preview = getLastMessagePreview(
             messagesBySession.get(session.id),
           );

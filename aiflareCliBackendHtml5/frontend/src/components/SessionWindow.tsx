@@ -5,13 +5,13 @@ import { appState } from "../state/appState.js";
 
 type SessionWindowProps = {
   client: ProtoClient;
-  activeSessionId: SessionId | null;
+  sessionId: SessionId;
   messages: Array<SessionMessage>;
 };
 
 export function SessionWindow({
   client,
-  activeSessionId,
+  sessionId,
   messages,
 }: SessionWindowProps): JSX.Element {
   const [input, setInput] = useState("");
@@ -19,16 +19,14 @@ export function SessionWindow({
 
   useEffect(() => {
     setInput("");
-  }, [activeSessionId]);
+  }, [sessionId]);
 
-  const activeSummary =
-    activeSessionId !== null ? appState.sessions.get(activeSessionId) : null;
+  const summary = appState.sessions.get(sessionId) ?? null;
 
   async function handleSend(): Promise<void> {
-    if (!activeSessionId || input.trim().length === 0 || sending) {
+    if (input.trim().length === 0 || sending) {
       return;
     }
-    const sessionId = activeSessionId;
     const content = input.trim();
     setSending(true);
     try {
@@ -45,18 +43,10 @@ export function SessionWindow({
     }
   }
 
-  if (!activeSessionId) {
-    return (
-      <section data-testid="session-window">
-        <p>Select a session to start chatting.</p>
-      </section>
-    );
-  }
-
   return (
-    <section data-testid="session-window">
-      <h2>{activeSummary?.title ?? activeSessionId}</h2>
-      <ul data-testid="session-messages">
+    <section data-testid="session-window" data-session-id={sessionId}>
+      <h2>{summary?.title ?? sessionId}</h2>
+      <ul data-testid={`session-messages-${sessionId}`}>
         {messages.map((message) => (
           <li key={message.id} data-role={message.role}>
             <strong>{message.role === "assistant" ? "AI" : "You"}:</strong>{" "}
@@ -65,10 +55,12 @@ export function SessionWindow({
         ))}
       </ul>
       <div className="session-input">
-        <label htmlFor="session-input-field">Your message</label>
+        <label htmlFor={`session-input-field-${sessionId}`}>
+          Your message
+        </label>
         <textarea
-          id="session-input-field"
-          data-testid="session-input"
+          id={`session-input-field-${sessionId}`}
+          data-testid={`session-input-${sessionId}`}
           value={input}
           onChange={(event) => setInput(event.target.value)}
           onKeyDown={(event) => {
@@ -82,7 +74,7 @@ export function SessionWindow({
         />
         <button
           type="button"
-          data-testid="session-send"
+          data-testid={`session-send-${sessionId}`}
           onClick={() => void handleSend()}
           disabled={sending || input.trim().length === 0}
         >

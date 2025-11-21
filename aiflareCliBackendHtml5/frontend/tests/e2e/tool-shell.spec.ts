@@ -5,11 +5,13 @@ import {
   waitForSessionCount,
   clickSessionEntry,
   sendMessageAndExpectAssistant,
+  resetBackendState,
 } from "./utils.js";
 
 const FRONTEND_ENTRY_URL = buildFrontendEntryUrl();
 
 test("shell tool output appears in chat", async ({ page, request }) => {
+  await resetBackendState(request);
   await waitForBackendCli(request);
   await page.goto(FRONTEND_ENTRY_URL);
 
@@ -21,6 +23,7 @@ test("shell tool output appears in chat", async ({ page, request }) => {
 
   await sendMessageAndExpectAssistant(
     page,
+    sessionId!,
     "Bitte benutze das shell tool, um den Befehl `printf TOOL_OK` auszuführen, und gib ausschließlich die Ausgabe des Befehls zurück.",
     /TOOL_OK/,
     { timeout: 60_000 },

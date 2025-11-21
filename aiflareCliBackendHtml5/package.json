@@ -23,7 +23,8 @@
     "dev:frontend": "npm --workspace frontend run dev",
     "test:unit": "npm --workspace backend run test:unit && npm --workspace cli-worker run test:unit",
     "test:integration": "npm --workspace backend run test:integration",
-    "e2e": "npm run build && npm --workspace frontend run e2e"
+    "clean:e2e": "node ./scripts/clean-e2e-state.js",
+    "e2e": "npm run clean:e2e && npm run build && npm --workspace frontend run e2e"
   },
   "devDependencies": {
     "npm-run-all": "^4.1.5",

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { appState, AppState } from "../src/state/appState.js";
+import { AppState } from "../src/state/appState.js";
 
 describe("appState selection", () => {
   let state: AppState;
@@ -9,7 +9,7 @@ describe("appState selection", () => {
     state = new AppState();
   });
 
-  it("notifies listeners on setActiveSession and exposes messages immediately", () => {
+  it("opens sessions and exposes messages immediately", () => {
     const sessionId = "sess_test";
     state.updateSession({
       id: sessionId,
@@ -27,10 +27,10 @@ describe("appState selection", () => {
       notified = true;
     });
 
-    state.setActiveSession(sessionId);
+    state.openSession(sessionId);
 
     expect(notified).toBe(true);
-    expect(state.activeSessionId).toBe(sessionId);
     expect(state.sessionMessages.get(sessionId)).toHaveLength(1);
+    expect(state.openSessionIds).toContain(sessionId);
   });
 });

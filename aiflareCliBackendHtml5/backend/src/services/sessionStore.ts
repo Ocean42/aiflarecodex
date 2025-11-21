@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { SessionId, SessionSummary } from "@aiflare/protocol";
@@ -287,6 +287,21 @@ export class SessionStore {
     return () => {
       this.listeners.delete(listener);
     };
+  }
+
+  reset(): void {
+    this.sessions.clear();
+    if (this.options.persistDir) {
+      try {
+        rmSync(this.options.persistDir, { recursive: true, force: true });
+        mkdirSync(this.options.persistDir, { recursive: true });
+      } catch (error) {
+        console.warn(
+          "[session-store] failed to reset persisted sessions",
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
   }
 
   private emit(event: SessionStoreEvent): void {

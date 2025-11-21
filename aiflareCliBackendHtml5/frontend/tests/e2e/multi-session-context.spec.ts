@@ -6,11 +6,13 @@ import {
   clickSessionEntry,
   sendMessageAndExpectAssistant,
   expectLatestAssistantMessage,
+  resetBackendState,
 } from "./utils.js";
 
 const FRONTEND_ENTRY_URL = buildFrontendEntryUrl();
 
 test("sessions keep independent context", async ({ page, request }) => {
+  await resetBackendState(request);
   await waitForBackendCli(request);
   await page.goto(FRONTEND_ENTRY_URL);
 
@@ -22,6 +24,7 @@ test("sessions keep independent context", async ({ page, request }) => {
   await clickSessionEntry(page, session1Id!);
   await sendMessageAndExpectAssistant(
     page,
+    session1Id!,
     "hallo, antworte mir bitte wenn ich frage welche session mit session1 und jetzt erstmal mit Okay.",
     /Okay/i,
   );
@@ -34,17 +37,16 @@ test("sessions keep independent context", async ({ page, request }) => {
   await clickSessionEntry(page, session2Id!);
   await sendMessageAndExpectAssistant(
     page,
+    session2Id!,
     "hallo, antworte mir bitte wenn ich frage welche session mit session2 und jetzt erstmal mit Okay.",
     /Okay/i,
   );
 
-  // Session context stays separated
+  // Session context stays separated without toggling panels
   await clickSessionEntry(page, session1Id!);
-  await expectLatestAssistantMessage(page, /Okay/i);
-  await expectNoSessionPlaceholder(page);
-
+  await expectLatestAssistantMessage(page, session1Id!, /Okay/i);
   await clickSessionEntry(page, session2Id!);
-  await expectLatestAssistantMessage(page, /Okay/i);
+  await expectLatestAssistantMessage(page, session2Id!, /Okay/i);
   await expectNoSessionPlaceholder(page);
 });
 

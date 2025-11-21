@@ -311,6 +311,11 @@ export class BackendApp {
       res.json({ history: this.sessionStore.getEvents(sessionId) });
     });
 
+    app.post("/api/debug/reset", (_req, res) => {
+      this.sessionStore.reset();
+      res.json({ status: "ok" });
+    });
+
     app.get("/api/actions", (_req, res) => {
       res.json({ actions: this.actionQueue });
     });
