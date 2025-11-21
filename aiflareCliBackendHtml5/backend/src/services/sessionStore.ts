@@ -38,6 +38,11 @@ export type SessionStoreEvent =
       type: "session_messages_appended";
       sessionId: SessionId;
       messages: Array<SessionMessage>;
+    }
+  | {
+      type: "session_message_updated";
+      sessionId: SessionId;
+      message: SessionMessage;
     };
 
 export interface SessionStoreOptions {
@@ -99,9 +104,13 @@ class SessionState {
     this.persist();
   }
 
-  appendMessage(role: SessionMessage["role"], content: string): SessionMessage {
+  appendMessage(
+    role: SessionMessage["role"],
+    content: string,
+    options?: { id?: string },
+  ): SessionMessage {
     const message: SessionMessage = {
-      id: `msg_${randomUUID()}`,
+      id: options?.id ?? `msg_${randomUUID()}`,
       sessionId: this.summary.id,
       role,
       content,
@@ -112,6 +121,28 @@ class SessionState {
     );
     this.persist();
     return message;
+  }
+
+  getMessage(messageId: string): SessionMessage | undefined {
+    return this.messages.find((message) => message.id === messageId);
+  }
+
+  updateMessage(messageId: string, updates: Partial<Omit<SessionMessage, "id" | "sessionId">>): SessionMessage {
+    const index = this.messages.findIndex((message) => message.id === messageId);
+    if (index === -1) {
+      throw new Error(`message ${messageId} not found`);
+    }
+    const current = this.messages[index]!;
+    const updated: SessionMessage = {
+      ...current,
+      ...updates,
+      id: current.id,
+      sessionId: current.sessionId,
+      timestamp: updates.timestamp ?? new Date().toISOString(),
+    };
+    this.messages[index] = updated;
+    this.persist();
+    return updated;
   }
 
   getMessages(): Array<SessionMessage> {
@@ -235,15 +266,37 @@ export class SessionStore {
     sessionId: SessionId,
     role: SessionMessage["role"],
     content: string,
+    options?: { id?: string },
   ): SessionMessage {
     const session = this.requireSession(sessionId);
-    const message = session.appendMessage(role, content);
+    const message = session.appendMessage(role, content, options);
     this.emit({
       type: "session_messages_appended",
       sessionId,
       messages: [message],
     });
     return message;
+  }
+
+  upsertAssistantMessage(sessionId: SessionId, externalId: string, content: string): SessionMessage {
+    const session = this.requireSession(sessionId);
+    const existing = session.getMessage(externalId);
+    if (existing) {
+      const updated = session.updateMessage(externalId, { content });
+      this.emit({
+        type: "session_message_updated",
+        sessionId,
+        message: updated,
+      });
+      return updated;
+    }
+    const created = session.appendMessage("assistant", content, { id: externalId });
+    this.emit({
+      type: "session_messages_appended",
+      sessionId,
+      messages: [created],
+    });
+    return created;
   }
 
   appendEvent(sessionId: SessionId, event: string, data?: unknown): SessionEvent {

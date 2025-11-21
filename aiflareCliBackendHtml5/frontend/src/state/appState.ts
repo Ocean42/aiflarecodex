@@ -6,6 +6,10 @@ import type {
   SessionMessage,
   SessionSummary,
 } from "@aiflare/protocol";
+import {
+  recordSessionMessageUpdate,
+  resetSessionMessageUpdates,
+} from "./sessionUpdateTracker.js";
 
 type Listener = () => void;
 
@@ -48,6 +52,27 @@ export class AppState {
     }
     const existing = this.sessionMessages.get(sessionId) ?? [];
     this.sessionMessages.set(sessionId, [...existing, ...newMessages]);
+    if (newMessages.some((message) => message.role === "assistant")) {
+      recordSessionMessageUpdate(sessionId);
+    }
+    this.notify();
+  }
+
+  updateSessionMessage(sessionId: SessionId, message: SessionMessage): void {
+    const existing = this.sessionMessages.get(sessionId);
+    if (!existing) {
+      return;
+    }
+    const index = existing.findIndex((entry) => entry.id === message.id);
+    if (index === -1) {
+      return;
+    }
+    const updated = existing.slice();
+    updated[index] = message;
+    this.sessionMessages.set(sessionId, updated);
+    if (message.role === "assistant") {
+      recordSessionMessageUpdate(sessionId);
+    }
     this.notify();
   }
 
@@ -81,6 +106,7 @@ export class AppState {
     state.sessions.forEach((session) => {
       const messages = state.transcripts[session.id] ?? [];
       this.sessionMessages.set(session.id, messages);
+      resetSessionMessageUpdates(session.id);
     });
     this.openSessionIds.splice(0, this.openSessionIds.length);
     for (const sessionId of previouslyOpen) {

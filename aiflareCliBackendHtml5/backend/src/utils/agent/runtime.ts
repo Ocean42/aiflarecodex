@@ -12,9 +12,10 @@ class AgentLoopRuntime {
     lastResponseId = "";
     lastAssistantMessage = "";
     workdir;
-    constructor(sessionId, getSessionSummary, toolExecutorFactory) {
+    onAgentItem;
+    constructor(sessionId, options) {
         this.sessionId = sessionId;
-        const summary = getSessionSummary(sessionId);
+        const summary = options.getSessionSummary(sessionId);
         if (!summary) {
             throw new Error(`Session ${sessionId} not found`);
         }
@@ -26,6 +27,7 @@ class AgentLoopRuntime {
         const config = loadConfig(undefined, undefined, {
             cwd: this.workdir,
         });
+        this.onAgentItem = options.onAgentItem;
         this.agent = new AgentLoop({
             model: summary.model || config.model,
             provider: config.provider,
@@ -45,7 +47,7 @@ class AgentLoopRuntime {
             onLastResponseId: (id) => {
                 this.lastResponseId = id;
             },
-            toolExecutor: toolExecutorFactory?.(summary),
+            toolExecutor: options.createToolExecutor?.(summary),
         });
     }
     async runPrompt(prompt) {
@@ -84,6 +86,7 @@ class AgentLoopRuntime {
             if (text.trim().length > 0) {
                 this.lastAssistantMessage = text.trim();
             }
+            this.onAgentItem?.(this.sessionId, item);
         }
     }
 }
@@ -120,5 +123,5 @@ function resolveApprovalPolicy(mode) {
     }
 }
 export function createAgentLoopRuntimeFactory(options) {
-    return (sessionId) => new AgentLoopRuntime(sessionId, options.getSessionSummary, options.createToolExecutor);
+    return (sessionId) => new AgentLoopRuntime(sessionId, options);
 }

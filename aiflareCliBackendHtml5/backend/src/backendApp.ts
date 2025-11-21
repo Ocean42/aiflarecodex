@@ -59,6 +59,10 @@ export class BackendApp {
   private readonly toolExecutorFactory: ToolExecutorFactory;
   private readonly sessionEventClients = new Set<express.Response>();
   private readonly logFile = process.env["BACKEND_LOG_FILE"] ?? "backend.log";
+  private readonly sessionEventStats = {
+    messagesAppended: new Map<SessionId, number>(),
+    assistantChunkEmits: new Map<SessionId, number>(),
+  };
 
   constructor(private readonly options?: BackendAppOptions) {
     initializeAuthState();
@@ -66,7 +70,10 @@ export class BackendApp {
     this.sessionStore = new SessionStore({
       persistDir: options?.sessionStoreDir ?? getSessionsRoot(),
     });
-    this.sessionStore.subscribe((event) => this.broadcastSessionEvent(event));
+    this.sessionStore.subscribe((event) => {
+      this.recordSessionEvent(event);
+      this.broadcastSessionEvent(event);
+    });
     this.toolExecutorFactory = createToolExecutorFactory({
       mode: "cli",
       enqueueAction: (cliId, payload) => this.enqueueAction(cliId, payload),
@@ -110,6 +117,8 @@ export class BackendApp {
         this.sessionStore.get(sessionId)?.getSummary(),
       createToolExecutor: (summary: SessionSummary) =>
         this.toolExecutorFactory(summary),
+      onAgentItem: (sessionId: SessionId, item: unknown) =>
+        this.handleAgentStreamItem(sessionId, item),
     });
   }
 
@@ -313,7 +322,13 @@ export class BackendApp {
 
     app.post("/api/debug/reset", (_req, res) => {
       this.sessionStore.reset();
+      this.sessionEventStats.messagesAppended.clear();
+      this.sessionEventStats.assistantChunkEmits.clear();
       res.json({ status: "ok" });
+    });
+
+    app.get("/api/debug/session-event-stats", (_req, res) => {
+      res.json(this.getSessionEventStats());
     });
 
     app.get("/api/actions", (_req, res) => {
@@ -505,22 +520,83 @@ export class BackendApp {
   }
 
   private broadcastSessionEvent(event: SessionStoreEvent): void {
-    const payload =
-      event.type === "session_summary_updated"
-        ? {
-            type: "session_summary_updated" as const,
-            sessionId: event.sessionId,
-            summary: event.summary,
-          }
-        : {
-            type: "session_messages_appended" as const,
-            sessionId: event.sessionId,
-            messages: event.messages,
-          };
+    let payload:
+      | {
+          type: "session_summary_updated";
+          sessionId: SessionId;
+          summary: SessionSummary;
+        }
+      | {
+          type: "session_messages_appended";
+          sessionId: SessionId;
+          messages: Array<SessionMessage>;
+        }
+      | {
+          type: "session_message_updated";
+          sessionId: SessionId;
+          message: SessionMessage;
+        };
+    switch (event.type) {
+      case "session_summary_updated":
+        payload = {
+          type: "session_summary_updated",
+          sessionId: event.sessionId,
+          summary: event.summary,
+        };
+        break;
+      case "session_message_updated":
+        payload = {
+          type: "session_message_updated",
+          sessionId: event.sessionId,
+          message: event.message,
+        };
+        break;
+      default:
+        payload = {
+          type: "session_messages_appended",
+          sessionId: event.sessionId,
+          messages: event.messages,
+        };
+        break;
+    }
     const data = `data: ${JSON.stringify(payload)}\n\n`;
     for (const client of this.sessionEventClients) {
       client.write(data);
     }
+  }
+
+  private recordSessionEvent(event: SessionStoreEvent): void {
+    if (event.type === "session_messages_appended") {
+      const prev = this.sessionEventStats.messagesAppended.get(event.sessionId) ?? 0;
+      this.sessionEventStats.messagesAppended.set(
+        event.sessionId,
+        prev + event.messages.length,
+      );
+    }
+  }
+
+  private getSessionEventStats(): {
+    messagesAppended: Record<SessionId, number>;
+    assistantChunkEmits: Record<SessionId, number>;
+  } {
+    return {
+      messagesAppended: Object.fromEntries(this.sessionEventStats.messagesAppended),
+      assistantChunkEmits: Object.fromEntries(this.sessionEventStats.assistantChunkEmits),
+    };
+  }
+
+  private recordAssistantChunk(sessionId: SessionId): void {
+    const prev = this.sessionEventStats.assistantChunkEmits.get(sessionId) ?? 0;
+    this.sessionEventStats.assistantChunkEmits.set(sessionId, prev + 1);
+  }
+
+  private handleAgentStreamItem(sessionId: SessionId, item: unknown): void {
+    const payload = normalizeAssistantItem(item);
+    if (!payload) {
+      return;
+    }
+    this.recordAssistantChunk(sessionId);
+    this.sessionStore.upsertAssistantMessage(sessionId, payload.id, payload.text);
   }
 
   private countSessionsForCli(cliId: CliId): number {
@@ -546,4 +622,44 @@ export class BackendApp {
 
 export function createBackendApp(options?: BackendAppOptions): BackendApp {
   return new BackendApp(options);
+}
+
+type AssistantItemPayload = {
+  id: string;
+  text: string;
+};
+
+function normalizeAssistantItem(input: unknown): AssistantItemPayload | null {
+  if (!input || typeof input !== "object") {
+    return null;
+  }
+  const item = input as { id?: unknown; type?: unknown; role?: unknown; content?: unknown };
+  if (item.type !== "message" || item.role !== "assistant") {
+    return null;
+  }
+  if (typeof item.id !== "string") {
+    return null;
+  }
+  const text = extractText(item.content);
+  if (!text) {
+    return null;
+  }
+  return { id: item.id, text };
+}
+
+function extractText(content: unknown): string | null {
+  if (!Array.isArray(content)) {
+    return null;
+  }
+  const combined = content
+    .map((segment) => {
+      if (segment && typeof segment === "object" && "text" in segment) {
+        const value = (segment as { text?: unknown }).text;
+        return typeof value === "string" ? value : "";
+      }
+      return "";
+    })
+    .join("");
+  const trimmed = combined.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }

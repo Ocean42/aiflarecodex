@@ -235,6 +235,9 @@ export function App(): JSX.Element {
         case "session_summary_updated":
           appState.updateSession(event.summary);
           break;
+        case "session_message_updated":
+          appState.updateSessionMessage(event.sessionId, event.message);
+          break;
         default:
           break;
       }

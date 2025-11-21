@@ -17,6 +17,11 @@ export type SessionEventPayload =
       type: "session_summary_updated";
       sessionId: SessionId;
       summary: SessionSummary;
+    }
+  | {
+      type: "session_message_updated";
+      sessionId: SessionId;
+      message: SessionMessage;
     };
 
 export class ProtoClient {

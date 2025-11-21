@@ -158,6 +158,27 @@ export function getAssistantMessages(page: Page, sessionId: string) {
     });
 }
 
+export async function fetchSessionEventStats(
+  request: APIRequestContext,
+): Promise<{
+  messagesAppended?: Record<string, number>;
+  assistantChunkEmits?: Record<string, number>;
+}> {
+  const res = await request.get(`${BACKEND_URL}/api/debug/session-event-stats`);
+  if (!res.ok()) {
+    throw new Error("Failed to fetch session event stats");
+  }
+  return res.json();
+}
+
+export async function getAssistantChunkCount(
+  request: APIRequestContext,
+  sessionId: string,
+): Promise<number> {
+  const stats = await fetchSessionEventStats(request);
+  return stats.assistantChunkEmits?.[sessionId] ?? 0;
+}
+
 export async function sendMessageAndExpectAssistant(
   page: Page,
   sessionId: string,
