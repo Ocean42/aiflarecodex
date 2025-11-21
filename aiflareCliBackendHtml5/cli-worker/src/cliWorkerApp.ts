@@ -147,7 +147,10 @@ export class CliWorkerApp {
     };
     switch (type) {
       case "noop":
-        console.log("[cli-worker] noop action", { ...baseInfo, workdir: payload?.workdir });
+        console.log("[cli-worker] noop action", {
+          ...baseInfo,
+          workdir: payload?.workdir,
+        });
         break;
       case "run_command":
         console.log("[cli-worker] run_command action", {
@@ -197,6 +200,7 @@ export class CliWorkerApp {
       callId?: string;
     };
     sessionId?: string;
+    workdir?: string;
   }): Promise<void> {
     if (!this.backendClient) {
       console.warn("[cli-worker] no backend client for tool call");
@@ -208,13 +212,18 @@ export class CliWorkerApp {
       console.warn("[cli-worker] invalid agent_tool_call payload", payload);
       return;
     }
+    console.log("[cli-worker] agent_tool_call", {
+      sessionId,
+      workdir: payload.workdir,
+      tool: invocation.name,
+    });
     const callId = invocation.callId ?? `call_${Date.now()}`;
     try {
       let outputs: Array<{ call_id: string; type: string; output: string }>;
       switch (invocation.name) {
         case "shell":
         case "local_shell_call":
-          outputs = await this.executeShellTool(invocation, callId);
+          outputs = await this.executeShellTool(invocation, callId, payload.workdir);
           break;
         default:
           outputs = [
@@ -245,6 +254,7 @@ export class CliWorkerApp {
   private async executeShellTool(
     invocation: { args?: unknown },
     callId: string,
+    workdirOverride?: string,
   ): Promise<Array<{ call_id: string; type: string; output: string }>> {
     const execInput = invocation.args as
       | { cmd?: Array<string>; workdir?: string }
@@ -254,9 +264,11 @@ export class CliWorkerApp {
       throw new Error("shell tool missing command");
     }
     const workdir =
-      execInput?.workdir && execInput.workdir.length > 0
-        ? execInput.workdir
-        : process.cwd();
+      workdirOverride && workdirOverride.length > 0
+        ? workdirOverride
+        : execInput?.workdir && execInput.workdir.length > 0
+          ? execInput.workdir
+          : process.cwd();
     const startedAt = Date.now();
     const { stdout, stderr, exitCode } = await this.spawnCommand(command, workdir);
     const durationSeconds = (Date.now() - startedAt) / 1000;
@@ -280,6 +292,7 @@ export class CliWorkerApp {
     command: Array<string>,
     workdir: string,
   ): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
+    console.log("[cli-worker] spawn_command", { command, workdir });
     return await new Promise((resolve) => {
       const child = spawn(command[0]!, command.slice(1), {
         cwd: workdir,

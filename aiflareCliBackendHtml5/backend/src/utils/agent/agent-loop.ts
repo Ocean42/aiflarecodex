@@ -359,6 +359,7 @@ export class AgentLoop {
     projectHeader;
     chatgptAccountId;
     additionalWritableRoots;
+    workspaceRoot;
     /** Whether we ask the API to persist conversation state on the server */
     disableResponseStorage;
     hasMcpServers;
@@ -428,6 +429,15 @@ export class AgentLoop {
     supportsParallelToolCalls;
     safeEmit(item) {
         this.onItem(item);
+    }
+    getWorkspaceRoot() {
+        return this.workspaceRoot ?? process.cwd();
+    }
+    ensureWorkdirOverride(input) {
+        if (typeof input === "string" && input.trim().length > 0 && input !== "/") {
+            return input;
+        }
+        return this.getWorkspaceRoot();
     }
     /**
      * Abort the ongoing request/stream, if any. This allows callers (typically
@@ -786,7 +796,11 @@ export class AgentLoop {
                     output: "no function found",
                 };
             const additionalItems = [];
-            const { outputText, metadata, additionalItems: additionalItemsFromExec, } = await handleExecCommand(invocation.args, this.config, this.approvalPolicy, this.additionalWritableRoots, this.getCommandConfirmation, this.execAbortController?.signal, {
+            const execArgs = {
+                ...(invocation.args ?? {}),
+                workdir: this.ensureWorkdirOverride(invocation.args?.workdir),
+            };
+            const { outputText, metadata, additionalItems: additionalItemsFromExec, } = await handleExecCommand(execArgs, this.config, this.approvalPolicy, this.additionalWritableRoots, this.getCommandConfirmation, this.execAbortController?.signal, {
                 callId,
                 onChunk: (chunk) => this.emitExecChunk(callId, chunk),
                 onApproval: this.onCommandApproval
@@ -821,10 +835,7 @@ export class AgentLoop {
                 this.markFunctionCallResolved(callId);
                 return [outputItem];
             }
-            const workdir = typeof invocation.args?.workdir ===
-                "string"
-                ? invocation.args.workdir
-                : undefined;
+            const workdir = this.ensureWorkdirOverride(invocation.args?.workdir);
             const result = runApplyPatchTool({ patch, workdir });
             outputItem.output = JSON.stringify({
                 output: result.output,
@@ -897,17 +908,21 @@ export class AgentLoop {
             }
             else {
                 try {
-                    const absPath = await resolveWorkspaceFile(requestedPath);
+                    const workspaceRoot = this.getWorkspaceRoot();
+                    const absPath = await resolveWorkspaceFile(requestedPath, workspaceRoot);
                     const data = await fs.readFile(absPath);
                     const fileInfo = await fileTypeFromBuffer(data);
                     const mime = fileInfo?.mime?.startsWith("image/") === true
                         ? fileInfo.mime
                         : "application/octet-stream";
                     const encoded = data.toString("base64");
-                    const rel = path.relative(process.cwd(), absPath) || absPath;
-                    const intro = rel === absPath
-                        ? `Attached image ${absPath}`
-                        : `Attached image ${rel}`;
+                    const relativePath = path.relative(workspaceRoot, absPath);
+                    const rel = relativePath &&
+                        !relativePath.startsWith("..") &&
+                        !path.isAbsolute(relativePath)
+                        ? relativePath
+                        : absPath;
+                    const intro = rel === absPath ? `Attached image ${absPath}` : `Attached image ${rel}`;
                     additionalItems.push({
                         type: "message",
                         role: "user",
@@ -944,7 +959,9 @@ export class AgentLoop {
             const callId = invocation.callId ?? randomUUID();
             const outputItem = this.createFunctionOutput(callId);
             try {
-                const { output, absolutePath } = await runReadFileTool(invocation.args);
+                const { output, absolutePath } = await runReadFileTool(invocation.args, {
+                    workspaceRoot: this.getWorkspaceRoot(),
+                });
                 outputItem.output = JSON.stringify({
                     output,
                     metadata: {
@@ -968,7 +985,9 @@ export class AgentLoop {
             const callId = invocation.callId ?? randomUUID();
             const outputItem = this.createFunctionOutput(callId);
             try {
-                const { output, absolutePath } = await runListDirTool(invocation.args);
+                const { output, absolutePath } = await runListDirTool(invocation.args, {
+                    workspaceRoot: this.getWorkspaceRoot(),
+                });
                 outputItem.output = JSON.stringify({
                     output,
                     metadata: {
@@ -992,7 +1011,9 @@ export class AgentLoop {
             const callId = invocation.callId ?? randomUUID();
             const outputItem = this.createFunctionOutput(callId);
             try {
-                const result = await runGrepFilesTool(invocation.args);
+                const result = await runGrepFilesTool(invocation.args, {
+                    workspaceRoot: this.getWorkspaceRoot(),
+                });
                 outputItem.output = JSON.stringify({
                     output: result.output,
                     metadata: {
@@ -1282,7 +1303,7 @@ export class AgentLoop {
      * happy under `noUnusedLocals`.  Restore when telemetry support lands.
      */
     // private cumulativeThinkingMs = 0;
-    constructor({ model, provider = "openai", instructions, approvalPolicy, label, sessionId, disableResponseStorage, 
+    constructor({ model, provider = "openai", instructions, approvalPolicy, label, sessionId, disableResponseStorage, workspaceRoot, 
     // `config` used to be required.  Some unit‑tests (and potentially other
     // callers) instantiate `AgentLoop` without passing it, so we make it
     // optional and fall back to sensible defaults.  This keeps the public
@@ -1304,6 +1325,7 @@ export class AgentLoop {
             instructions: instructions ?? "",
         };
         this.additionalWritableRoots = additionalWritableRoots;
+        this.workspaceRoot = workspaceRoot;
         this.onItem = onItem;
         this.onLoading = onLoading;
         this.getCommandConfirmation = getCommandConfirmation;

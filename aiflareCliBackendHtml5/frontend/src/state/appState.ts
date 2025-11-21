@@ -6,10 +6,7 @@ import type {
   SessionEvent,
   SessionSummary,
 } from "@aiflare/protocol";
-import {
-  recordSessionTimelineUpdate,
-  resetSessionTimelineUpdates,
-} from "./sessionUpdateTracker.js";
+import { resetSessionTimelineUpdates } from "./sessionUpdateTracker.js";
 
 type Listener = () => void;
 
@@ -63,9 +60,6 @@ export class AppState {
       return a.id.localeCompare(b.id);
     });
     this.sessionTimeline.set(sessionId, merged);
-    if (newEvents.some((event) => event.type === "message" && event.role === "assistant")) {
-      recordSessionTimelineUpdate(sessionId);
-    }
     this.notify();
   }
 

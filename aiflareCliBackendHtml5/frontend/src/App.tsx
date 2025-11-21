@@ -17,6 +17,7 @@ import { LogPanel, type LogEntry } from "./components/LogPanel.js";
 import type { AuthStatus } from "./types/auth.js";
 import { SessionNavigator } from "./components/SessionNavigator.js";
 import { SessionWorkspace } from "./components/SessionWorkspace.js";
+import { SessionEventsController } from "./controllers/sessionEventsController.js";
 import "dockview/dist/styles/dockview.css";
 import "./styles.css";
 
@@ -67,6 +68,10 @@ export function App(): JSX.Element {
     clientRef.current = new ProtoClient(backendUrl);
   }
   const client = clientRef.current;
+  const sseControllerRef = useRef<SessionEventsController>();
+  if (!sseControllerRef.current) {
+    sseControllerRef.current = new SessionEventsController(client);
+  }
   const [view] = useLocalState<AppViewModel>(({ self, reRender }) => {
     const vm: AppViewModel = Object.assign(self, {
       clis: [],
@@ -227,23 +232,9 @@ export function App(): JSX.Element {
   });
 
   useEffect(() => {
-    const unsubscribe = client.subscribeSessionEvents((event) => {
-      console.log("[frontend][sse]", event);
-      switch (event.type) {
-        case "session_events_appended":
-          if (event.summary) {
-            appState.updateSession(event.summary);
-          }
-          appState.appendSessionTimeline(event.sessionId, event.events);
-          break;
-        default:
-          break;
-      }
-    });
-    return () => {
-      unsubscribe();
-    };
-  }, [client]);
+    sseControllerRef.current?.start();
+    return () => sseControllerRef.current?.stop();
+  }, []);
 
   useEffect(() => {
     const timer = setInterval(() => {

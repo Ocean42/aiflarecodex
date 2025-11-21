@@ -36,6 +36,7 @@ class AgentLoopRuntime {
             sessionId,
             disableResponseStorage: config.disableResponseStorage,
             additionalWritableRoots: [this.workdir],
+            workspaceRoot: this.workdir,
             config,
             onItem: (item) => this.handleAgentItem(item),
             onLoading: () => {

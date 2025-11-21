@@ -509,9 +509,14 @@ export class BackendApp {
       workdir = this.sessionStore.get(sessionId)?.getSummary().workdir;
     }
     const normalizedPayload =
-      workdir && workdir.length > 0 && payload && typeof payload === "object"
-        ? { ...(payload as Record<string, unknown>), workdir }
-        : payload;
+      payload && typeof payload === "object"
+        ? {
+            ...(payload as Record<string, unknown>),
+            workdir,
+          }
+        : {
+            workdir,
+          };
     this.actionQueue.push({
       actionId,
       cliId,
@@ -523,6 +528,7 @@ export class BackendApp {
       cliId,
       actionId,
       type: (normalizedPayload as { type?: string })?.type ?? "unknown",
+      workdir: (normalizedPayload as { workdir?: string })?.workdir,
     });
   }
 

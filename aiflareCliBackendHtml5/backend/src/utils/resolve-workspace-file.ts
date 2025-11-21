@@ -15,6 +15,10 @@ const SKIP_DIRS = new Set([
     ".direnv",
 ]);
 const fileCache = new Map();
+
+function getCacheKey(baseDir: string, normalized: string): string {
+  return `${baseDir}::${normalized}`;
+}
 async function pathExists(filePath) {
     try {
         await fs.access(filePath);
@@ -55,29 +59,31 @@ async function findByBasename(root, baseName) {
     }
     return null;
 }
-export async function resolveWorkspaceFile(rawPath) {
-    const normalized = rawPath.trim();
-    if (normalized === "") {
-        throw new Error("empty path");
-    }
-    if (fileCache.has(normalized)) {
-        return fileCache.get(normalized);
-    }
-    const absolute = path.isAbsolute(normalized)
-        ? normalized
-        : path.resolve(process.cwd(), normalized);
-    if (await pathExists(absolute)) {
-        fileCache.set(normalized, absolute);
-        return absolute;
-    }
-    const baseName = path.basename(normalized);
-    if (baseName !== normalized) {
-        throw new Error(`Unable to find file at '${normalized}'`);
-    }
-    const discovered = await findByBasename(process.cwd(), baseName);
-    if (!discovered) {
-        throw new Error(`Unable to locate '${normalized}' within the workspace`);
-    }
-    fileCache.set(normalized, discovered);
-    return discovered;
+export async function resolveWorkspaceFile(rawPath, baseDir) {
+  const normalized = rawPath.trim();
+  if (normalized === "") {
+    throw new Error("empty path");
+  }
+  const cwd = baseDir ? path.resolve(baseDir) : process.cwd();
+  const cacheKey = getCacheKey(cwd, normalized);
+  if (fileCache.has(cacheKey)) {
+    return fileCache.get(cacheKey);
+  }
+  const absolute = path.isAbsolute(normalized)
+    ? normalized
+    : path.resolve(cwd, normalized);
+  if (await pathExists(absolute)) {
+    fileCache.set(cacheKey, absolute);
+    return absolute;
+  }
+  const baseName = path.basename(normalized);
+  if (baseName !== normalized) {
+    throw new Error(`Unable to find file at '${normalized}'`);
+  }
+  const discovered = await findByBasename(cwd, baseName);
+  if (!discovered) {
+    throw new Error(`Unable to locate '${normalized}' within the workspace`);
+  }
+  fileCache.set(cacheKey, discovered);
+  return discovered;
 }

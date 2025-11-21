@@ -1,4 +1,4 @@
-import { expect, type APIRequestContext, type Page, type TestInfo } from "@playwright/test";
+import { expect, type APIRequestContext, type Locator, type Page, type TestInfo } from "@playwright/test";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -232,7 +232,7 @@ export async function sendMessageAndExpectAssistant(
     await expect(target).toHaveText(expected, { timeout });
   }
   if (options?.captureText) {
-    const text = await target.innerText();
+    const text = await waitForStableLocatorText(page, target, timeout);
     return { text };
   }
 }
@@ -269,4 +269,30 @@ async function waitForAssistantCount(
     await page.waitForTimeout(200);
   }
   throw new Error(`Timed out waiting for assistant responses to reach ${minCount}`);
+}
+
+async function waitForStableLocatorText(
+  page: Page,
+  locator: Locator,
+  totalTimeout: number,
+): Promise<string> {
+  const settleThresholdMs = 500;
+  const pollIntervalMs = 100;
+  const startedAt = Date.now();
+  let lastText = await locator.innerText();
+  let stableFor = 0;
+  while (Date.now() - startedAt < totalTimeout) {
+    await page.waitForTimeout(pollIntervalMs);
+    const current = await locator.innerText();
+    if (current === lastText) {
+      stableFor += pollIntervalMs;
+      if (stableFor >= settleThresholdMs) {
+        return current;
+      }
+    } else {
+      lastText = current;
+      stableFor = 0;
+    }
+  }
+  return lastText;
 }

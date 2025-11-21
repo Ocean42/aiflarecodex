@@ -60,6 +60,10 @@ class CliToolExecutor implements ToolExecutor {
     const normalizedInvocation: ToolInvocation = {
       ...invocation,
       callId,
+      args:
+        this.workdir && this.workdir.length > 0
+          ? { ...(invocation.args as Record<string, unknown> | undefined), workdir: this.workdir }
+          : invocation.args,
     };
     this.enqueueAction(this.cliId, {
       type: "agent_tool_call",

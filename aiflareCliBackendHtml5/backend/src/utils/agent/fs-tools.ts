@@ -15,8 +15,9 @@ const COMMENT_PREFIXES = ["#", "//", "--"];
 const GREP_DEFAULT_LIMIT = 100;
 const GREP_MAX_LIMIT = 2000;
 const RG_TIMEOUT_MS = 30_000;
-export async function runReadFileTool(rawArgs) {
-    const args = await normalizeReadFileArgs(rawArgs);
+export async function runReadFileTool(rawArgs, options) {
+    const workspaceRoot = options?.workspaceRoot;
+    const args = await normalizeReadFileArgs(rawArgs, workspaceRoot);
     const records = await collectFileLines(args.filePath);
     if (records.length === 0) {
         throw new Error("file is empty");
@@ -30,8 +31,9 @@ export async function runReadFileTool(rawArgs) {
         absolutePath: args.filePath,
     };
 }
-export async function runListDirTool(rawArgs) {
-    const args = await normalizeListDirArgs(rawArgs);
+export async function runListDirTool(rawArgs, options) {
+    const workspaceRoot = options?.workspaceRoot;
+    const args = await normalizeListDirArgs(rawArgs, workspaceRoot);
     const entries = await collectEntries(args.dirPath, args.depth);
     if (entries.length === 0) {
         const header = `Absolute path: ${args.dirPath}`;
@@ -52,8 +54,9 @@ export async function runListDirTool(rawArgs) {
     const outputLines = [`Absolute path: ${args.dirPath}`, ...formatted];
     return { output: outputLines.join("\n"), absolutePath: args.dirPath };
 }
-export async function runGrepFilesTool(rawArgs) {
-    const args = await normalizeGrepArgs(rawArgs);
+export async function runGrepFilesTool(rawArgs, options) {
+    const workspaceRoot = options?.workspaceRoot;
+    const args = await normalizeGrepArgs(rawArgs, workspaceRoot);
     const { stdout, stderr, code } = await executeRgCommand(args);
     if (code !== 0 && code !== 1) {
         const message = stderr.trim() || "rg failed to search for matches";
@@ -75,12 +78,12 @@ export async function runGrepFilesTool(rawArgs) {
         exitCode: 0,
     };
 }
-async function normalizeReadFileArgs(rawArgs) {
+async function normalizeReadFileArgs(rawArgs, workspaceRoot) {
     const requestedPath = getString(rawArgs.file_path);
     if (!requestedPath) {
         throw new Error("file_path is required");
     }
-    const filePath = await resolveFilePath(requestedPath);
+    const filePath = await resolveFilePath(requestedPath, workspaceRoot);
     await assertIsFile(filePath);
     const offset = parsePositiveInt(rawArgs.offset, READ_FILE_DEFAULT_OFFSET, "offset must be a 1-indexed line number");
     const limit = parsePositiveInt(rawArgs.limit, READ_FILE_DEFAULT_LIMIT, "limit must be greater than zero");
@@ -108,7 +111,7 @@ async function normalizeReadFileArgs(rawArgs) {
     }
     return { filePath, offset, limit, mode, indentation };
 }
-async function normalizeGrepArgs(rawArgs) {
+async function normalizeGrepArgs(rawArgs, workspaceRoot) {
     const pattern = typeof rawArgs.pattern === "string" ? rawArgs.pattern.trim() : "";
     if (!pattern) {
         throw new Error("pattern must not be empty");
@@ -120,37 +123,39 @@ async function normalizeGrepArgs(rawArgs) {
     const requestedPath = typeof rawArgs.path === "string" && rawArgs.path.trim() !== ""
         ? rawArgs.path.trim()
         : "";
+    const baseDir = workspaceRoot ?? process.cwd();
     const searchPath = requestedPath
         ? path.isAbsolute(requestedPath)
             ? requestedPath
-            : path.resolve(process.cwd(), requestedPath)
-        : process.cwd();
+            : path.resolve(baseDir, requestedPath)
+        : baseDir;
     await assertPathExists(searchPath);
     return { pattern, include, searchPath, limit };
 }
-async function normalizeListDirArgs(rawArgs) {
+async function normalizeListDirArgs(rawArgs, workspaceRoot) {
     const requestedPath = getString(rawArgs.dir_path);
     if (!requestedPath) {
         throw new Error("dir_path is required");
     }
-    const dirPath = resolveDirectoryPath(requestedPath);
+    const dirPath = resolveDirectoryPath(requestedPath, workspaceRoot);
     await assertIsDirectory(dirPath);
     const offset = parsePositiveInt(rawArgs.offset, LIST_DIR_DEFAULT_OFFSET, "offset must be a 1-indexed entry number");
     const limit = parsePositiveInt(rawArgs.limit, LIST_DIR_DEFAULT_LIMIT, "limit must be greater than zero");
     const depth = parsePositiveInt(rawArgs.depth, LIST_DIR_DEFAULT_DEPTH, "depth must be greater than zero");
     return { dirPath, offset, limit, depth };
 }
-async function resolveFilePath(requestedPath) {
+async function resolveFilePath(requestedPath, workspaceRoot) {
     if (path.isAbsolute(requestedPath)) {
         return requestedPath;
     }
-    return resolveWorkspaceFile(requestedPath);
+    return resolveWorkspaceFile(requestedPath, workspaceRoot);
 }
-function resolveDirectoryPath(requestedPath) {
+function resolveDirectoryPath(requestedPath, workspaceRoot) {
     if (path.isAbsolute(requestedPath)) {
         return requestedPath;
     }
-    return path.resolve(process.cwd(), requestedPath);
+    const baseDir = workspaceRoot ?? process.cwd();
+    return path.resolve(baseDir, requestedPath);
 }
 async function assertIsFile(filePath) {
     try {
