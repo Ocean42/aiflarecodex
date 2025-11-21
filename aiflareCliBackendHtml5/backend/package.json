@@ -9,10 +9,12 @@
     "aiflare-backend": "dist/bin/start-backend.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && npm run build:resources",
+    "postbuild": "mkdir -p dist/resources && cp src/resources/codex-instructions.txt dist/resources/codex-instructions.txt",
     "dev": "node dist/bin/start-backend.js",
     "test:unit": "vitest run",
-    "test:integration": "echo 'backend integration tests pending'"
+    "test:integration": "echo 'backend integration tests pending'",
+    "build:resources": "rm -rf dist/resources && mkdir -p dist/resources && cp src/resources/codex-instructions.txt dist/resources/codex-instructions.txt"
   },
   "dependencies": {
     "@aiflare/protocol": "file:../protocol",

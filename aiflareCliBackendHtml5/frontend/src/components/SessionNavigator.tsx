@@ -52,7 +52,8 @@ export function SessionNavigator({
           const preview = getLastMessagePreview(
             messagesBySession.get(session.id),
           );
-          const status = STATUS_LABEL[session.status] ?? session.status.toUpperCase();
+          const status =
+            STATUS_LABEL[session.status] ?? session.status.toUpperCase();
           return (
             <li
               key={session.id}
@@ -61,19 +62,27 @@ export function SessionNavigator({
             >
               <button
                 type="button"
+                className="session-entry"
                 data-testid={`session-select-${session.id}`}
                 onClick={() => onSelect(session.id)}
               >
-                <strong className={`status-${session.status}`} data-testid="session-status">
-                  {status}
-                </strong>{" "}
-                {session.title ?? session.id}
+                <div className="session-entry-header">
+                  <strong
+                    className={`status-${session.status}`}
+                    data-testid="session-status"
+                  >
+                    {status}
+                  </strong>{" "}
+                  {session.title ?? session.id}
+                </div>
+                <div className="session-preview">
+                  <span className="session-cli">{session.cliId}</span>{" "}
+                  <span className="session-model">[{session.model}]</span>
+                  {preview ? (
+                    <span className="session-last">{preview}</span>
+                  ) : null}
+                </div>
               </button>
-              <div className="session-preview">
-                <span className="session-cli">{session.cliId}</span>{" "}
-                <span className="session-model">[{session.model}]</span>
-                {preview ? <span className="session-last">{preview}</span> : null}
-              </div>
             </li>
           );
         })}

@@ -6,11 +6,15 @@ import { mkdirSync, rmSync } from "node:fs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../../..");
-const backendScript = path.resolve(repoRoot, "backend/dist/index.js");
-const cliScript = path.resolve(repoRoot, "cli-worker/dist/index.js");
+const backendDir = path.resolve(repoRoot, "backend");
+const cliDir = path.resolve(repoRoot, "cli-worker");
+const backendScript = path.resolve(backendDir, "dist/index.js");
+const cliScript = path.resolve(cliDir, "dist/index.js");
 const frontendDir = path.resolve(repoRoot, "frontend");
 const tempDir = path.resolve(repoRoot, "tmp");
 const cliConfigPath = path.resolve(tempDir, "cli-e2e-config.json");
+const backendSessionDir = path.resolve(backendDir, "tmp/sessions");
+const legacyFrontendSessionDir = path.resolve(repoRoot, "frontend/tmp/sessions");
 const backendPort = Number(process.env["E2E_BACKEND_PORT"] ?? "4123");
 const frontendPort = Number(process.env["E2E_FRONTEND_PORT"] ?? "5174");
 const backendUrl = process.env["E2E_BACKEND_URL"] ?? `http://127.0.0.1:${backendPort}`;
@@ -68,7 +72,10 @@ export default async function globalSetup(): Promise<() => void> {
   killPort(backendPort);
   killPort(frontendPort);
 
+  rmSync(backendSessionDir, { recursive: true, force: true });
+  rmSync(legacyFrontendSessionDir, { recursive: true, force: true });
   const backend = spawn("node", [backendScript], {
+    cwd: backendDir,
     env: { ...process.env, BACKEND_PORT: String(backendPort) },
     stdio: "inherit",
   });
@@ -78,6 +85,7 @@ export default async function globalSetup(): Promise<() => void> {
   rmSync(cliConfigPath, { force: true });
 
   const cli = spawn("node", [cliScript], {
+    cwd: cliDir,
     env: {
       ...process.env,
       BACKEND_URL: backendUrl,

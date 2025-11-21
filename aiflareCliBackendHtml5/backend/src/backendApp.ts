@@ -2,6 +2,8 @@ import express, { type Express } from "express";
 import cors from "cors";
 import type { Server } from "node:http";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
 import { join } from "node:path";
 import type {
   BootstrapState,
@@ -23,11 +25,7 @@ import {
   SessionRunnerService,
   type SessionRuntimeFactory,
 } from "./services/sessionRunner.js";
-import {
-  createAgentLoopRuntimeFactory,
-  createLegacyRuntimeFactory,
-} from "./utils/agent/runtime.js";
-import { SessionAgentService } from "./services/sessionAgent.js";
+import { createAgentLoopRuntimeFactory } from "./utils/agent/runtime.js";
 import { ToolResultBroker } from "./services/toolResultBroker.js";
 import {
   createToolExecutorFactory,
@@ -47,7 +45,6 @@ type ActionEntry = {
 export interface BackendAppOptions {
   port?: number;
   sessionStoreDir?: string;
-  forceLegacyAgent?: boolean;
 }
 
 export class BackendApp {
@@ -76,10 +73,8 @@ export class BackendApp {
       enqueueAction: (cliId, payload) => this.enqueueAction(cliId, payload),
       toolResultBroker: this.toolResultBroker,
     });
-    this.sessionRunner = new SessionRunnerService(
-      this.sessionStore,
-      this.createRuntimeFactory(),
-    );
+    const runtimeFactory = this.createRuntimeFactory();
+    this.sessionRunner = new SessionRunnerService(this.sessionStore, runtimeFactory);
     this.log("BackendApp initialized", { port: this.port });
   }
 
@@ -105,41 +100,29 @@ export class BackendApp {
   }
 
   private createRuntimeFactory(): SessionRuntimeFactory {
-    const shouldUseLegacy = this.shouldUseLegacyRuntime();
-    if (shouldUseLegacy) {
-      this.log("Using legacy SessionAgent runtime");
-      return createLegacyRuntimeFactory(new SessionAgentService());
+    const authPath = this.resolveAuthPath();
+    if (!this.hasAgentCredentials(authPath)) {
+      throw new Error(
+        `missing_agent_credentials: provide OPENAI_API_KEY/AZURE_OPENAI_API_KEY or ${authPath}`,
+      );
     }
-    try {
-      return createAgentLoopRuntimeFactory({
-        getSessionSummary: (sessionId: SessionId) =>
-          this.sessionStore.get(sessionId)?.getSummary(),
-        createToolExecutor: (summary: SessionSummary) =>
-          this.toolExecutorFactory(summary),
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.log("Failed to initialize AgentLoop runtime, falling back to legacy", {
-        error: message,
-      });
-      return createLegacyRuntimeFactory(new SessionAgentService());
-    }
+    return createAgentLoopRuntimeFactory({
+      getSessionSummary: (sessionId: SessionId) =>
+        this.sessionStore.get(sessionId)?.getSummary(),
+      createToolExecutor: (summary: SessionSummary) =>
+        this.toolExecutorFactory(summary),
+    });
   }
 
-  private shouldUseLegacyRuntime(): boolean {
-    if (this.options?.forceLegacyAgent) {
-      return true;
-    }
-    if (process.env["AIFLARE_FORCE_AGENT_LOOP"] === "1") {
-      return false;
-    }
-    if (process.env["AIFLARE_FORCE_LEGACY_AGENT"] === "1") {
-      return true;
-    }
-    const hasOpenAiKey =
-      Boolean(process.env["OPENAI_API_KEY"]) ||
-      Boolean(process.env["AZURE_OPENAI_API_KEY"]);
-    return !hasOpenAiKey;
+  private resolveAuthPath(): string {
+    return (
+      process.env["CODEX_AUTH_FILE"] ??
+      join(os.homedir(), ".codey", "auth.json")
+    );
+  }
+
+  private hasAgentCredentials(authPath: string): boolean {
+    return fs.existsSync(authPath);
   }
 
   private registerRoutes(app: Express): void {

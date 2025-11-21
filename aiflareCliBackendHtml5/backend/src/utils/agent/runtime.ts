@@ -5,24 +5,12 @@ import { AgentLoop } from "./agent-loop.js";
 import { loadConfig } from "../config.js";
 import { AutoApprovalMode } from "../auto-approval-mode.js";
 import { existsSync } from "node:fs";
-class LegacyAgentRuntime {
-    sessionId;
-    legacyService;
-    constructor(sessionId, legacyService) {
-        this.sessionId = sessionId;
-        this.legacyService = legacyService;
-    }
-    async runPrompt(prompt) {
-        return this.legacyService.handlePrompt(this.sessionId, prompt);
-    }
-}
-const DEFAULT_ASSISTANT_FALLBACK = "Okay";
 class AgentLoopRuntime {
     sessionId;
     summary;
     agent;
     lastResponseId = "";
-    lastAssistantMessage = DEFAULT_ASSISTANT_FALLBACK;
+    lastAssistantMessage = "";
     workdir;
     constructor(sessionId, getSessionSummary, toolExecutorFactory) {
         this.sessionId = sessionId;
@@ -62,14 +50,19 @@ class AgentLoopRuntime {
     }
     async runPrompt(prompt) {
         const message = createUserMessage(prompt);
-        this.lastAssistantMessage = DEFAULT_ASSISTANT_FALLBACK;
+        this.lastAssistantMessage = "";
         const previousCwd = process.cwd();
         try {
             process.chdir(this.workdir);
+            console.log(`[agent-loop] session=${this.sessionId} prompt=${JSON.stringify(message)}`);
             await this.agent.run([message], this.lastResponseId);
         }
         finally {
             process.chdir(previousCwd);
+        }
+        console.log(`[agent-loop] session=${this.sessionId} reply=${JSON.stringify(this.lastAssistantMessage)}`);
+        if (!this.lastAssistantMessage) {
+            throw new Error("empty_agent_response");
         }
         return this.lastAssistantMessage;
     }
@@ -77,6 +70,12 @@ class AgentLoopRuntime {
         this.agent.terminate();
     }
     handleAgentItem(item) {
+        try {
+            console.log(`[agent-loop] session=${this.sessionId} item-raw=${JSON.stringify(item)}`);
+        }
+        catch {
+            // ignore logging errors
+        }
         if (!isNativeResponseItem(item)) {
             return;
         }
@@ -122,7 +121,4 @@ function resolveApprovalPolicy(mode) {
 }
 export function createAgentLoopRuntimeFactory(options) {
     return (sessionId) => new AgentLoopRuntime(sessionId, options.getSessionSummary, options.createToolExecutor);
-}
-export function createLegacyRuntimeFactory(legacyService) {
-    return (sessionId) => new LegacyAgentRuntime(sessionId, legacyService);
 }

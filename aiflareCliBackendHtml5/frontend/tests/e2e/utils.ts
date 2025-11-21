@@ -29,20 +29,6 @@ export async function waitForBackendCli(request: APIRequestContext): Promise<Arr
   throw new Error("No CLI registered in backend within timeout");
 }
 
-export async function waitForSessionViaApi(request: APIRequestContext): Promise<string> {
-  const timeoutMs = 15_000;
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const res = await request.get(`${BACKEND_URL}/api/sessions`);
-    const data = await res.json();
-    if (data?.sessions?.length) {
-      return data.sessions[data.sessions.length - 1].id as string;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  throw new Error("Session not created in time");
-}
-
 export async function waitForSessionCount(
   request: APIRequestContext,
   expectedCount: number,
@@ -72,6 +58,21 @@ export async function pollForNoActions(request: APIRequestContext): Promise<void
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error("Actions still pending after timeout");
+}
+
+export async function clickSessionEntry(
+  page: Page,
+  sessionId: string,
+): Promise<void> {
+  const button = page.getByTestId(`session-select-${sessionId}`);
+  await expect(button).toBeVisible({ timeout: 15_000 });
+  const box = await button.boundingBox();
+  if (!box) {
+    throw new Error(`Unable to determine bounding box for session ${sessionId}`);
+  }
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  const header = page.locator("[data-testid='session-window'] h2");
+  await expect(header).toContainText(sessionId, { timeout: 15_000 });
 }
 
 export async function ensureCliVisible(page: Page, expectedCount: number): Promise<void> {

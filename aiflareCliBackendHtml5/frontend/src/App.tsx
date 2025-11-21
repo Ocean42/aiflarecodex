@@ -106,6 +106,7 @@ export function App(): JSX.Element {
           workdir: vm.form.workdir,
           model: vm.form.model,
         });
+        vm.addLog(`[session] created ${sessionId}`);
         await refreshFromBackend();
         appState.setActiveSession(sessionId);
         await vm.handleSelectSession(sessionId);
@@ -115,11 +116,20 @@ export function App(): JSX.Element {
         reRender();
       },
       async handleSelectSession(sessionId: SessionId) {
+        vm.activeSessionId = sessionId;
+        reRender();
         appState.setActiveSession(sessionId);
         vm.sync();
+        reRender();
+        vm.addLog(`[session] selecting ${sessionId}`);
         try {
           const messages = await client.fetchSessionMessages(sessionId);
           appState.setSessionMessages(sessionId, messages);
+          vm.sync();
+          reRender();
+          vm.addLog(
+            `[session] loaded ${messages.length} messages for ${sessionId}`,
+          );
         } catch (error) {
           console.error("[frontend] failed to load session messages", error);
           vm.addLog(`[session] failed to load messages for ${sessionId}`);
@@ -250,7 +260,15 @@ export function App(): JSX.Element {
           />
         </div>
         <div className="session-window-panel">
-          <SessionWindow client={client} />
+          <SessionWindow
+            client={client}
+            activeSessionId={view.activeSessionId}
+            messages={
+              view.activeSessionId
+                ? view.sessionMessages.get(view.activeSessionId) ?? []
+                : []
+            }
+          />
         </div>
       </div>
       <LogPanel logs={view.logs} />

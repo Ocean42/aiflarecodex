@@ -11,6 +11,7 @@ export default defineConfig({
   timeout: 120_000,
   retries: 0,
   fullyParallel: false,
+  workers: 1,
   use: {
     baseURL,
     trace: "on-first-retry",
