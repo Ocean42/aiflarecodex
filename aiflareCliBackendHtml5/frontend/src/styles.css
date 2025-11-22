@@ -82,6 +82,27 @@ body {
   min-height: 0;
 }
 
+.session-window-panel [data-testid="session-window"] {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+.session-window-panel [data-testid^="session-timeline-"] {
+  flex: 1;
+  overflow-y: auto;
+  margin: 0 0 1rem;
+  padding: 0;
+  list-style: none;
+}
+
+.session-window-panel [data-testid^="session-timeline-"] li {
+  list-style: none;
+  margin-bottom: 0.5rem;
+}
+
 .session-workspace {
   flex: 1;
   min-height: 0;

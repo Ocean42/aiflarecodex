@@ -39,4 +39,7 @@ test("assistant produces only one final message per prompt", async ({ page, requ
 
   await page.waitForTimeout(1500);
   await expect(assistantMessages).toHaveCount(1);
+  const text = (await assistantMessages.first().innerText()).toLowerCase();
+  const halloMatches = text.match(/hallo/g) ?? [];
+  expect(halloMatches.length).toBe(1);
 });

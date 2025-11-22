@@ -72,6 +72,10 @@ class AgentLoopRuntime {
         catch {
             // ignore logging errors
         }
+        if (item.type === "message" && item.role === "user") {
+            // User prompts are already appended directly to the session timeline.
+            return;
+        }
         const isNative = isNativeResponseItem(item);
         if (!isNative) {
             this.onAgentItem?.(this.sessionId, item);

@@ -30,11 +30,7 @@ export function SessionWindow({
     const content = input.trim();
     setSending(true);
     try {
-      const { timeline: updated } = await client.sendSessionPrompt(
-        sessionId,
-        content,
-      );
-      appState.setSessionTimeline(sessionId, updated);
+      await client.sendSessionPrompt(sessionId, content);
     } catch (error) {
       console.error("[session-window] failed to send message", error);
     } finally {
