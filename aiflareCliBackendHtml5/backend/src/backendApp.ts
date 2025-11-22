@@ -18,7 +18,11 @@ import {
 } from "./services/authState.js";
 import { logToFile } from "./services/logWriter.js";
 import { persistAuthData } from "./services/authStorage.js";
-import { SessionStore, type SessionStoreEvent } from "./services/sessionStore.js";
+import {
+  SessionStore,
+  type SessionEventDraft,
+  type SessionStoreEvent,
+} from "./services/sessionStore.js";
 import {
   SessionRunnerService,
   type SessionRuntimeFactory,
@@ -319,6 +323,31 @@ export class BackendApp {
 
     app.get("/api/debug/session-event-stats", (_req, res) => {
       res.json(this.getSessionEventStats());
+    });
+
+    app.post("/api/debug/sessions/:sessionId/events", (req, res) => {
+      const sessionId = req.params["sessionId"] as SessionId;
+      const events = req.body?.events;
+      if (!Array.isArray(events) || events.length === 0) {
+        res.status(400).json({ error: "missing_events" });
+        return;
+      }
+      try {
+        const appended = this.sessionStore.appendTimelineEvents(
+          sessionId,
+          events as Array<SessionEventDraft>,
+        );
+        res.json({ events: appended });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes("not found")) {
+          res.status(404).json({ error: "session_not_found" });
+        } else {
+          res
+            .status(500)
+            .json({ error: "append_failed", message });
+        }
+      }
     });
 
     app.get("/api/actions", (_req, res) => {

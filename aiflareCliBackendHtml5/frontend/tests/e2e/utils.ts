@@ -296,3 +296,37 @@ async function waitForStableLocatorText(
   }
   return lastText;
 }
+
+export async function createSessionViaUi(
+  page: Page,
+  request: APIRequestContext,
+  options?: { workdir?: string; model?: string },
+): Promise<string> {
+  if (options?.workdir) {
+    await page.getByLabel("Workdir:").fill(options.workdir);
+  }
+  if (options?.model) {
+    await page.getByLabel("Model:").fill(options.model);
+  }
+  await page.getByRole("button", { name: "Create Session" }).click();
+  const sessions = await waitForSessionCount(request, 1);
+  const sessionId = sessions[sessions.length - 1]?.id;
+  if (!sessionId) {
+    throw new Error("Failed to create session");
+  }
+  return sessionId;
+}
+
+export async function appendTimelineEvents(
+  request: APIRequestContext,
+  sessionId: string,
+  events: Array<Record<string, unknown>>,
+): Promise<void> {
+  const res = await request.post(`${BACKEND_URL}/api/debug/sessions/${sessionId}/events`, {
+    data: { events },
+  });
+  if (!res.ok()) {
+    const body = await res.text();
+    throw new Error(`Failed to append timeline events (${res.status()}): ${body}`);
+  }
+}
