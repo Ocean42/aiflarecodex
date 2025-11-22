@@ -4,6 +4,8 @@ import { ModalDialog } from "./ModalDialog.js";
 type Props = {
   label: string;
   badgeCount?: number;
+  badgeLabel?: string;
+  badgeStatus?: "ok" | "warn";
   dialogTitle?: string;
   testId?: string;
   renderContent(): JSX.Element;
@@ -22,6 +24,8 @@ function formatBadge(count: number): string {
 export function TopBarOpenableElement({
   label,
   badgeCount = 0,
+  badgeLabel,
+  badgeStatus,
   dialogTitle,
   renderContent,
   testId,
@@ -34,12 +38,6 @@ export function TopBarOpenableElement({
     [label, testId],
   );
 
-  useEffect(() => {
-    if (open && badgeCount === 0) {
-      setOpen(false);
-    }
-  }, [badgeCount, open]);
-
   return (
     <div className="top-bar-openable">
       <button
@@ -50,8 +48,12 @@ export function TopBarOpenableElement({
         onClick={() => setOpen((current) => !current)}
       >
         <span className="top-bar-chip-label">{label}</span>
-        <span className="top-bar-badge" data-testid={`${baseTestId}-badge`}>
-          {formatBadge(badgeCount)}
+        <span
+          className="top-bar-badge"
+          data-testid={`${baseTestId}-badge`}
+          data-status={badgeStatus}
+        >
+          {badgeLabel ?? formatBadge(badgeCount)}
         </span>
       </button>
       <ModalDialog

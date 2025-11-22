@@ -20,6 +20,11 @@ async function closeSessionTab(page: Page, sessionId: string): Promise<void> {
     .locator('[data-testid="session-workspace"] .dv-default-tab')
     .filter({ hasText: sessionId.slice(0, 6) });
   await expect(tab.first()).toBeVisible({ timeout: 15_000 });
+  const minimizedModal = page.getByTestId("topbar-minimized-modal");
+  if (await minimizedModal.isVisible().catch(() => false)) {
+    await minimizedModal.getByRole("button", { name: "Close" }).click();
+    await expect(minimizedModal).toBeHidden();
+  }
   const closeButton = tab.first().locator(".dv-default-tab-action");
   await tab.first().hover();
   await closeButton.click();
@@ -70,6 +75,5 @@ test("dockview tabs close to minimized and can be restored", async ({ page, requ
   await expect(
     page.locator('[data-testid="session-workspace"] .dv-default-tab'),
   ).toHaveCount(0);
-  await expect(page.getByText("Click + to create a new session.")).toBeVisible();
   await expect(page.getByTestId("session-create-panel")).toHaveCount(0);
 });

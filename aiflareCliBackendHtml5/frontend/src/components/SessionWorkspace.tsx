@@ -360,9 +360,6 @@ export function SessionWorkspace({
       function Watermark(): JSX.Element {
         return (
           <div className="dockview-watermark">
-            <div className="workspace-placeholder">
-              Click + to create a new session.
-            </div>
           </div>
         );
       },

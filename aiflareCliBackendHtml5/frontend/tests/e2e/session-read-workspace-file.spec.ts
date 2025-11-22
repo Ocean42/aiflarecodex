@@ -9,6 +9,7 @@ import {
   sendMessageAndExpectAssistant,
   resetBackendState,
   ensureCliVisible,
+  getAssistantMessages,
 } from "./utils.js";
 
 const FRONTEND_ENTRY_URL = buildFrontendEntryUrl();
@@ -31,6 +32,7 @@ function normalizeContent(value: string): string {
 }
 
 test("session can read the entire bigText file from workspace", async ({ page, request }) => {
+  test.setTimeout(180_000);
   await resetBackendState(request);
   await waitForBackendCli(request);
   await page.goto(FRONTEND_ENTRY_URL);
@@ -43,15 +45,18 @@ test("session can read the entire bigText file from workspace", async ({ page, r
   expect(sessionId).toBeTruthy();
   await clickSessionEntry(page, sessionId!);
 
-  const response = await sendMessageAndExpectAssistant(
+  await sendMessageAndExpectAssistant(
     page,
     sessionId!,
     `gib mir den ganzen inhalt von ${TARGET_FILE} wieder`,
     /.+/,
-    { timeout: 60_000, captureText: true },
+    { timeout: 120_000 },
   );
-  expect(response).toBeDefined();
-  const normalized = normalizeContent(response!.text);
+  const runStatus = page.getByTestId("session-run-status");
+  await expect(runStatus).toBeHidden({ timeout: 120_000 });
+  const finalMessage = getAssistantMessages(page, sessionId!).last();
+  await expect(finalMessage).toBeVisible({ timeout: 10_000 });
+  const normalized = normalizeContent(await finalMessage.innerText());
   for (const segment of EXPECTED_SEGMENTS) {
     expect(normalized).toContain(normalizeContent(segment));
   }

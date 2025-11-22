@@ -350,16 +350,22 @@ export function App(): JSX.Element {
         activeCliCount={view.clis.filter((cli) => cli.status === "connected").length}
         logsCount={view.logs.length}
         minimizedCount={view.minimizedSessionIds.length}
+        authBadgeCount={view.auth?.loggedIn ? 1 : 0}
+        authBadgeStatus={view.auth?.loggedIn ? "ok" : "warn"}
         renderClis={renderClisDialog}
         renderLogs={renderLogsDialog}
         renderMinimizedSessions={renderMinimizedSessionsDialog}
-      />
-      <AuthPanel
-        status={view.auth}
-        clis={view.clis}
-        pendingLogins={view.auth?.pendingLogins ?? []}
-        onLogin={(cliId) => view.handleLogin(cliId)}
-        onLogout={() => view.handleLogout()}
+        renderAuth={() => (
+          <div data-testid="auth-panel">
+            <AuthPanel
+              status={view.auth}
+              clis={view.clis}
+              pendingLogins={view.auth?.pendingLogins ?? []}
+              onLogin={(cliId) => view.handleLogin(cliId)}
+              onLogout={() => view.handleLogout()}
+            />
+          </div>
+        )}
       />
       <div className="app-body">
         <div className="session-window-panel">
@@ -367,13 +373,13 @@ export function App(): JSX.Element {
             client={client}
             sessions={view.sessions}
             openSessionIds={view.openSessionIds}
-          timelineBySession={view.sessionTimeline}
-          clis={view.clis}
-          defaultForm={view.form}
-          onCreateSession={(form) => view.handleCreateSessionWithForm(form)}
-          onOpenSession={(sessionId) => view.openSession(sessionId)}
-          onCloseSession={(sessionId) => view.handleCloseSession(sessionId)}
-        />
+            timelineBySession={view.sessionTimeline}
+            clis={view.clis}
+            defaultForm={view.form}
+            onCreateSession={(form) => view.handleCreateSessionWithForm(form)}
+            onOpenSession={(sessionId) => view.openSession(sessionId)}
+            onCloseSession={(sessionId) => view.handleCloseSession(sessionId)}
+          />
         </div>
       </div>
     </main>

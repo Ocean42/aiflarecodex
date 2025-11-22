@@ -40,37 +40,35 @@ export function AuthPanel({
   };
 
   return (
-    <section aria-label="Codex Authentication">
-      <h2>Codex Authentication</h2>
-      {status ? (
-        <>
-          <p data-testid="auth-state">
-            {loggedIn ? "Logged in to Codex" : "Not logged in"}
-          </p>
-          {status.lastLoginAt && (
-            <p>Last login: {new Date(status.lastLoginAt).toLocaleString()}</p>
-          )}
-          {pendingLogins.length > 0 && (
-            <div>
-              <p>Pending login requests:</p>
-              <ul>
-                {pendingLogins.map((entry) => (
-                  <li key={entry.cliId}>
-                    {entry.cliId} – open the link shown in that CLI
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </>
-      ) : (
-        <p>Loading authentication status…</p>
-      )}
+    <section aria-label="Codex Authentication" className="auth-card">
+      <header className="auth-card-header">
+        <span className="auth-title">Codex Auth</span>
+        <span
+          className={`auth-status ${loggedIn ? "auth-status-ok" : "auth-status-warn"}`}
+          data-testid="auth-state"
+        >
+          {loggedIn ? "Logged in" : "Not logged in"}
+        </span>
+      </header>
+      <div className="auth-body">
+        {status?.lastLoginAt ? (
+          <span className="auth-subtle">
+            Last login: {new Date(status.lastLoginAt).toLocaleString()}
+          </span>
+        ) : (
+          <span className="auth-subtle">Checking authentication…</span>
+        )}
+        {pendingLogins.length > 0 && (
+          <span className="auth-subtle">
+            Pending: {pendingLogins.map((entry) => entry.cliId).join(", ")}
+          </span>
+        )}
+      </div>
       <div className="auth-actions">
         {!loggedIn ? (
           <>
-            <label>
-              Target CLI:
+            <label className="auth-label">
+              Target CLI
               <select
                 value={selectedCli}
                 onChange={(event) => setSelectedCli(event.target.value)}
@@ -86,15 +84,20 @@ export function AuthPanel({
             </label>
             <button
               type="button"
+              className="auth-button"
               disabled={!selectedCli}
               onClick={handleLoginClick}
             >
-              Send login link to CLI
+              Send login link
             </button>
           </>
         ) : (
-          <button type="button" onClick={() => void onLogout()}>
-            Log out of Codex
+          <button
+            type="button"
+            className="auth-button auth-button-secondary"
+            onClick={() => void onLogout()}
+          >
+            Log out
           </button>
         )}
       </div>

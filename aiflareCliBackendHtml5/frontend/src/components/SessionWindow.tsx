@@ -20,6 +20,7 @@ export function SessionWindow({
   const [sending, setSending] = useState(false);
   const [canceling, setCanceling] = useState(false);
   const currentRequest = useRef<AbortController | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     setInput("");
@@ -86,9 +87,15 @@ export function SessionWindow({
   const contextSeverity =
     contextPercent > 40 ? "ok" : contextPercent > 25 ? "warn" : "danger";
 
+  useEffect(() => {
+    if (!inputRef.current) return;
+    const element = inputRef.current;
+    element.style.height = "auto";
+    element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
+  }, [input]);
+
   return (
     <section data-testid="session-window" data-session-id={sessionId}>
-      <h2>{title}</h2>
       <ul data-testid={`session-timeline-${sessionId}`}>
         {sortedTimeline.map((event) => (
           <li key={event.id}>{renderTimelineEvent(event)}</li>
@@ -127,7 +134,7 @@ export function SessionWindow({
         </div>
       ) : null}
       <div className="session-input">
-        <label htmlFor={`session-input-field-${sessionId}`}>
+        <label htmlFor={`session-input-field-${sessionId}`} className="session-input-label">
           Your message
         </label>
         <textarea
@@ -141,8 +148,9 @@ export function SessionWindow({
               void handleSend();
             }
           }}
-          rows={3}
+          rows={1}
           placeholder="Type a message..."
+          ref={inputRef}
         />
         <button
           type="button"
@@ -165,7 +173,7 @@ function renderTimelineEvent(event: SessionEvent): JSX.Element {
       const messageLines = extractMessageLines(event);
       return (
         <div data-event-type="message" data-role={event.role} className="timeline-message">
-          <strong>{prefix}:</strong>
+          <strong>{prefix}:</strong>{" "}
           <div className="message-content">
             {messageLines.map((line, index) => (
               <div

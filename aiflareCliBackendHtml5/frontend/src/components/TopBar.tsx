@@ -5,9 +5,12 @@ type Props = {
   activeCliCount: number;
   logsCount: number;
   minimizedCount: number;
+  authBadgeCount?: number;
+  authBadgeStatus?: "ok" | "warn";
   renderClis(): JSX.Element;
   renderLogs(): JSX.Element;
   renderMinimizedSessions(): JSX.Element;
+  renderAuth(): JSX.Element;
 };
 
 export function TopBar({
@@ -15,9 +18,12 @@ export function TopBar({
   activeCliCount,
   logsCount,
   minimizedCount,
+  authBadgeCount = 0,
+  authBadgeStatus,
   renderClis,
   renderLogs,
   renderMinimizedSessions,
+  renderAuth,
 }: Props): JSX.Element {
   return (
     <header className="top-bar" data-testid="top-bar">
@@ -35,6 +41,15 @@ export function TopBar({
           dialogTitle="Connected CLIs"
           renderContent={renderClis}
           testId="topbar-clis"
+        />
+        <TopBarOpenableElement
+          label="Codex"
+          badgeLabel="Auth"
+          badgeStatus={authBadgeStatus}
+          badgeCount={authBadgeCount}
+          dialogTitle="Codex Authentication"
+          renderContent={renderAuth}
+          testId="topbar-auth"
         />
         <TopBarOpenableElement
           label="Minimized Sessions"
