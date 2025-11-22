@@ -75,18 +75,25 @@ export async function clickSessionEntry(
     .locator('[data-testid="session-workspace"] .dv-default-tab')
     .filter({ hasText: sessionId.slice(0, 6) });
   if ((await tab.count()) === 0) {
-    await page.evaluate((id) => {
-      return (
-        (globalThis as typeof globalThis & {
-          __AIFLARE_OPEN_SESSION?: (sessionId: string) => Promise<void>;
-        }).__AIFLARE_OPEN_SESSION?.(id) ?? null
-      );
-    }, sessionId);
+    const minimizedToggle = page.getByTestId("topbar-minimized-toggle");
+    const minimizedDialog = page.getByTestId("topbar-minimized-modal");
+    const toggleVisible = await minimizedToggle.isVisible().catch(() => false);
+    if (toggleVisible) {
+      await minimizedToggle.click();
+      const restoreButton = minimizedDialog.getByTestId(`restore-session-${sessionId}`);
+      if (await restoreButton.isVisible().catch(() => false)) {
+        await restoreButton.click();
+      }
+      const closeButton = minimizedDialog.getByRole("button", { name: "Close" });
+      if (await closeButton.isVisible().catch(() => false)) {
+        await closeButton.click();
+      }
+    }
   }
-  if ((await tab.count()) > 0) {
-    await expect(tab.first()).toBeVisible({ timeout: 15_000 });
-    await tab.first().click();
-  }
+  await expect(tab.first(), `Session tab for ${sessionId} should be visible`).toBeVisible({
+    timeout: 15_000,
+  });
+  await tab.first().click();
   await expect(input).toBeVisible({
     timeout: 20_000,
   });
