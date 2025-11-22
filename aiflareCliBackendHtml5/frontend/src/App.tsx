@@ -8,6 +8,7 @@ import type {
 import { ProtoClient } from "./api/protoClient.js";
 import { useLocalState } from "./hooks/useLocalState.js";
 import { appState } from "./state/appState.js";
+import { TopBar } from "./components/TopBar.js";
 import {
   SessionFormSection,
   type SessionForm,
@@ -243,9 +244,40 @@ export function App(): JSX.Element {
     return () => clearInterval(timer);
   }, [view]);
 
+  const renderLogsDialog = (): JSX.Element => {
+    if (view.logs.length === 0) {
+      return <p className="muted-text">No client logs yet.</p>;
+    }
+    return (
+      <ul className="log-list-compact">
+        {[...view.logs].reverse().map((log) => (
+          <li key={log.id}>
+            <span className="log-timestamp">
+              {new Date(log.timestamp).toLocaleTimeString()}
+            </span>
+            <span className="log-message">{log.message}</span>
+          </li>
+        ))}
+      </ul>
+    );
+  };
+
+  const renderMinimizedSessionsDialog = (): JSX.Element => (
+    <div className="dialog-empty-state">
+      <p className="muted-text">
+        No minimized sessions yet. Close a docked session to see it here.
+      </p>
+    </div>
+  );
+
   return (
     <main className="app-shell">
-      <h1>Aiflare Session Console</h1>
+      <TopBar
+        logsCount={view.logs.length}
+        minimizedCount={0}
+        renderLogs={renderLogsDialog}
+        renderMinimizedSessions={renderMinimizedSessionsDialog}
+      />
       <AuthPanel
         status={view.auth}
         clis={view.clis}
