@@ -103,6 +103,40 @@ body {
   margin-bottom: 0.5rem;
 }
 
+.context-indicator {
+  margin-bottom: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.context-pill {
+  border-radius: 999px;
+  padding: 0.1rem 0.65rem;
+  font-weight: 500;
+}
+
+.context-pill.context-ok {
+  background-color: rgba(16, 185, 129, 0.15);
+  color: #047857;
+}
+
+.context-pill.context-warn {
+  background-color: rgba(251, 191, 36, 0.2);
+  color: #92400e;
+}
+
+.context-pill.context-danger {
+  background-color: rgba(248, 113, 113, 0.2);
+  color: #b91c1c;
+}
+
+.context-warning {
+  color: #b91c1c;
+  font-size: 0.85rem;
+}
+
 .session-status {
   display: flex;
   align-items: center;

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionEvent, SessionId } from "@aiflare/protocol";
 import type { ProtoClient } from "../api/protoClient.js";
 import { appState } from "../state/appState.js";
+import { calculateContextPercentRemaining } from "../utils/context.js";
 
 type SessionWindowProps = {
   client: ProtoClient;
@@ -76,6 +77,12 @@ export function SessionWindow({
       }),
     [timeline],
   );
+  const contextPercent = useMemo(
+    () => calculateContextPercentRemaining(sortedTimeline, summary?.model),
+    [sortedTimeline, summary?.model],
+  );
+  const contextSeverity =
+    contextPercent > 40 ? "ok" : contextPercent > 25 ? "warn" : "danger";
 
   return (
     <section data-testid="session-window" data-session-id={sessionId}>
@@ -85,6 +92,16 @@ export function SessionWindow({
           <li key={event.id}>{renderTimelineEvent(event)}</li>
         ))}
       </ul>
+      <div className="context-indicator" data-testid="context-indicator">
+        <span className={`context-pill context-${contextSeverity}`}>
+          {Math.round(contextPercent)}% context left
+        </span>
+        {contextPercent <= 25 ? (
+          <span className="context-warning">
+            Consider trimming or summarizing older responses.
+          </span>
+        ) : null}
+      </div>
       {sending || isRunning ? (
         <div className="session-status" data-testid="session-run-status">
           <span className="session-spinner" aria-label="Assistant running" />
