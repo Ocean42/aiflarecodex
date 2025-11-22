@@ -2,6 +2,7 @@ import express, { type Express } from "express";
 import cors from "cors";
 import type { Server } from "node:http";
 import { randomUUID } from "node:crypto";
+import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import type {
   BootstrapState,
@@ -67,6 +68,10 @@ export class BackendApp {
     eventsAppended: new Map<SessionId, number>(),
     assistantChunkEmits: new Map<SessionId, number>(),
   };
+  private readonly manualShellTasks = new Map<
+    SessionId,
+    { callId: string; child: ChildProcess; startedAt: number; command: Array<string>; cwd: string; canceled: boolean }
+  >();
   private resetInFlight: Promise<void> | null = null;
 
   constructor(private readonly options?: BackendAppOptions) {
@@ -311,9 +316,44 @@ export class BackendApp {
         res.json({ reply: result.reply, timeline });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        if (message === "agent_run_cancelled") {
+          this.sessionStore.updateSummary(sessionId, { status: "waiting" });
+          res.status(499).json({ error: "prompt_cancelled" });
+          return;
+        }
         this.sessionStore.updateSummary(sessionId, { status: "error" });
         res.status(500).json({ error: "prompt_failed", message });
       }
+    });
+
+    app.post("/api/sessions/:sessionId/cancel", (req, res) => {
+      const sessionId = req.params["sessionId"] as SessionId;
+      const sessionExists = this.sessionStore.get(sessionId);
+      if (!sessionExists) {
+        res.status(404).json({ error: "session_not_found" });
+        return;
+      }
+      this.sessionRunner.cancel(sessionId);
+      const manualTask = this.manualShellTasks.get(sessionId);
+      if (manualTask) {
+        manualTask.canceled = true;
+        manualTask.child.kill("SIGTERM");
+      }
+      this.sessionStore.updateSummary(sessionId, { status: "waiting" });
+      this.sessionStore.appendTimelineEvents(sessionId, [
+        ({
+          id: `evt_${randomUUID()}`,
+          type: "message" as const,
+          role: "system" as const,
+          content: [
+            {
+              type: "text",
+              text: "Execution canceled by user.",
+            },
+          ],
+        } as unknown as SessionEventDraft),
+      ]);
+      res.json({ status: "canceled" });
     });
 
     app.post("/api/debug/reset", async (_req, res) => {
@@ -348,6 +388,100 @@ export class BackendApp {
             .json({ error: "append_failed", message });
         }
       }
+    });
+
+    app.post("/api/debug/sessions/:sessionId/run-long-task", (req, res) => {
+      const sessionId = req.params["sessionId"] as SessionId;
+      const session = this.sessionStore.get(sessionId);
+      if (!session) {
+        res.status(404).json({ error: "session_not_found" });
+        return;
+      }
+      if (this.manualShellTasks.has(sessionId)) {
+        res.status(409).json({ error: "task_already_running" });
+        return;
+      }
+      const callId = `manual_${randomUUID()}`;
+      const command = ["bash", "-lc", "python -c \"import time; time.sleep(120)\""];
+      const cwd = session.getSummary().workdir ?? process.cwd();
+      const startedAt = Date.now();
+      this.sessionStore.updateSummary(sessionId, { status: "running" });
+      this.sessionStore.appendTimelineEvents(sessionId, [
+        {
+          id: `evt_${randomUUID()}`,
+          type: "tool_call_started",
+          callId,
+          toolName: "shell",
+        } as SessionEventDraft,
+        {
+          id: `evt_${randomUUID()}`,
+          type: "exec_event",
+          phase: "begin",
+          callId,
+          command,
+          cwd,
+        } as SessionEventDraft,
+      ]);
+      const child = spawn(command[0]!, command.slice(1), {
+        cwd,
+        stdio: "ignore",
+      });
+      this.manualShellTasks.set(sessionId, {
+        callId,
+        child,
+        startedAt,
+        command,
+        cwd,
+        canceled: false,
+      });
+      child.once("error", (error) => {
+        this.manualShellTasks.delete(sessionId);
+        this.sessionStore.appendTimelineEvents(sessionId, [
+          {
+            id: `evt_${randomUUID()}`,
+            type: "tool_call_output",
+            callId,
+            toolName: "shell",
+            status: "error",
+            error: error instanceof Error ? error.message : String(error),
+          } as SessionEventDraft,
+        ]);
+        this.sessionStore.updateSummary(sessionId, { status: "error" });
+      });
+      child.once("close", (code, signal) => {
+        const task = this.manualShellTasks.get(sessionId);
+        this.manualShellTasks.delete(sessionId);
+        const durationSeconds = Math.max((Date.now() - startedAt) / 1000, 0);
+        const errorMessage =
+          task?.canceled || signal
+            ? "command_aborted"
+            : code && code !== 0
+              ? `exit_code_${code}`
+              : undefined;
+        this.sessionStore.appendTimelineEvents(sessionId, [
+          {
+            id: `evt_${randomUUID()}`,
+            type: "exec_event",
+            phase: "end",
+            callId,
+            command,
+            cwd,
+            exitCode: typeof code === "number" ? code : undefined,
+            durationSeconds,
+          } as SessionEventDraft,
+          {
+            id: `evt_${randomUUID()}`,
+            type: "tool_call_output",
+            callId,
+            toolName: "shell",
+            status: errorMessage ? "error" : "ok",
+            durationSeconds,
+            error: errorMessage,
+          } as SessionEventDraft,
+        ]);
+        this.sessionStore.updateSummary(sessionId, { status: "waiting" });
+      });
+      res.json({ callId });
     });
 
     app.get("/api/actions", (_req, res) => {

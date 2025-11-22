@@ -13,6 +13,7 @@ class AgentLoopRuntime {
     lastAssistantMessage = "";
     workdir;
     onAgentItem;
+    cancelRequested = false;
     constructor(sessionId, options) {
         this.sessionId = sessionId;
         const summary = options.getSessionSummary(sessionId);
@@ -54,9 +55,23 @@ class AgentLoopRuntime {
     async runPrompt(prompt) {
         const message = createUserMessage(prompt);
         this.lastAssistantMessage = "";
+        this.cancelRequested = false;
         console.log(`[agent-loop] session=${this.sessionId} prompt=${JSON.stringify(message)}`);
-        await this.agent.run([message], this.lastResponseId);
+        try {
+            await this.agent.run([message], this.lastResponseId);
+        }
+        catch (error) {
+            if (this.cancelRequested) {
+                this.cancelRequested = false;
+                throw new Error("agent_run_cancelled");
+            }
+            throw error;
+        }
         console.log(`[agent-loop] session=${this.sessionId} reply=${JSON.stringify(this.lastAssistantMessage)}`);
+        if (this.cancelRequested) {
+            this.cancelRequested = false;
+            throw new Error("agent_run_cancelled");
+        }
         if (!this.lastAssistantMessage) {
             throw new Error("empty_agent_response");
         }
@@ -64,6 +79,10 @@ class AgentLoopRuntime {
     }
     dispose() {
         this.agent.terminate();
+    }
+    cancel() {
+        this.cancelRequested = true;
+        this.agent.cancel();
     }
     handleAgentItem(item) {
         try {

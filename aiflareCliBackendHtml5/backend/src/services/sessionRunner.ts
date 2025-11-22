@@ -3,6 +3,7 @@ import { SessionStore } from "./sessionStore.js";
 
 export interface SessionRuntime {
   runPrompt(prompt: string): Promise<string>;
+  cancel?(): void;
   dispose?(): void;
 }
 
@@ -105,6 +106,10 @@ class SessionRunner {
     await Promise.allSettled(Array.from(this.activeRuns));
     this.activeRuns.clear();
   }
+
+  cancel(): void {
+    this.runtime.cancel?.();
+  }
 }
 
 export class SessionRunnerService {
@@ -118,6 +123,11 @@ export class SessionRunnerService {
   submitPrompt(sessionId: SessionId, prompt: string): Promise<{ reply: string }> {
     const runner = this.ensureRunner(sessionId);
     return runner.submitPrompt(prompt);
+  }
+
+  cancel(sessionId: SessionId): void {
+    const runner = this.runners.get(sessionId);
+    runner?.cancel();
   }
 
   async reset(sessionId: SessionId): Promise<void> {

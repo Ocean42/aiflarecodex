@@ -122,10 +122,7 @@ export async function handleExecCommand(rawArgs, config, policy, additionalWrita
     // upward by returning an empty (no-op) result so that the agent loop will
     // exit cleanly without emitting spurious output.
     if (abortSignal?.aborted) {
-        return {
-            outputText: "",
-            metadata: {},
-        };
+        throw new Error("command_aborted");
     }
     if (summary.exitCode !== 0 &&
         runInSandbox &&

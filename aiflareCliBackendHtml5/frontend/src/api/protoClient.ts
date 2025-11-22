@@ -77,16 +77,27 @@ export class ProtoClient {
   async sendSessionPrompt(
     sessionId: SessionId,
     content: string,
+    options?: { signal?: AbortSignal },
   ): Promise<{ reply: string; timeline: Array<SessionEvent> }> {
     const response = await fetch(new URL(`/api/sessions/${sessionId}/timeline`, this.baseUrl), {
       method: "POST",
       headers: { "content-type": "application/json" },
+      signal: options?.signal,
       body: JSON.stringify({ content }),
     });
     if (!response.ok) {
       throw new Error(`Failed to send message for session ${sessionId}`);
     }
     return response.json();
+  }
+
+  async cancelSession(sessionId: SessionId): Promise<void> {
+    const response = await fetch(new URL(`/api/sessions/${sessionId}/cancel`, this.baseUrl), {
+      method: "POST",
+    });
+    if (!response.ok) {
+      throw new Error("Failed to cancel session");
+    }
   }
 
   subscribeSessionEvents(onEvent: (event: SessionEventPayload) => void): () => void {

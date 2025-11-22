@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionEvent, SessionId } from "@aiflare/protocol";
 import type { ProtoClient } from "../api/protoClient.js";
 import { appState } from "../state/appState.js";
@@ -16,26 +16,52 @@ export function SessionWindow({
 }: SessionWindowProps): JSX.Element {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [canceling, setCanceling] = useState(false);
+  const currentRequest = useRef<AbortController | null>(null);
 
   useEffect(() => {
     setInput("");
   }, [sessionId]);
 
   const summary = appState.sessions.get(sessionId) ?? null;
+  const isRunning = summary?.status === "running";
 
   async function handleSend(): Promise<void> {
-    if (input.trim().length === 0 || sending) {
+    if (input.trim().length === 0 || sending || isRunning) {
       return;
     }
     const content = input.trim();
     setSending(true);
+    const controller = new AbortController();
+    currentRequest.current = controller;
     try {
-      await client.sendSessionPrompt(sessionId, content);
+      await client.sendSessionPrompt(sessionId, content, {
+        signal: controller.signal,
+      });
     } catch (error) {
-      console.error("[session-window] failed to send message", error);
+      if (!(error instanceof DOMException && error.name === "AbortError")) {
+        console.error("[session-window] failed to send message", error);
+      }
     } finally {
       setInput("");
       setSending(false);
+      currentRequest.current = null;
+    }
+  }
+
+  async function handleCancel(): Promise<void> {
+    if (canceling) {
+      return;
+    }
+    setCanceling(true);
+    currentRequest.current?.abort();
+    currentRequest.current = null;
+    try {
+      await client.cancelSession(sessionId);
+    } catch (error) {
+      console.error("[session-window] failed to cancel session", error);
+    } finally {
+      setCanceling(false);
     }
   }
 
@@ -59,6 +85,28 @@ export function SessionWindow({
           <li key={event.id}>{renderTimelineEvent(event)}</li>
         ))}
       </ul>
+      {sending || isRunning ? (
+        <div className="session-status" data-testid="session-run-status">
+          <span className="session-spinner" aria-label="Assistant running" />
+          <span>
+            {canceling
+              ? "Stopping current run..."
+              : isRunning
+                ? "Assistant is running…"
+                : "Sending prompt…"}
+          </span>
+          {isRunning ? (
+            <button
+              type="button"
+              className="cancel-button"
+              onClick={() => void handleCancel()}
+              disabled={canceling}
+            >
+              {canceling ? "Canceling…" : "Cancel"}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       <div className="session-input">
         <label htmlFor={`session-input-field-${sessionId}`}>
           Your message
@@ -81,7 +129,7 @@ export function SessionWindow({
           type="button"
           data-testid={`session-send-${sessionId}`}
           onClick={() => void handleSend()}
-          disabled={sending || input.trim().length === 0}
+          disabled={sending || input.trim().length === 0 || isRunning}
         >
           {sending ? "Sending..." : "Send"}
         </button>
