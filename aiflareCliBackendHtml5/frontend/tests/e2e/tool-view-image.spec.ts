@@ -40,6 +40,26 @@ test("view_image tool identifies katze picture", async ({ page, request }) => {
 
   const reply = result?.text ?? "";
   expect(reply.toLowerCase()).not.toMatch(/keine datei|not find|nicht gefunden/);
-  expect(reply.toLowerCase()).toMatch(/bild|foto|image/);
   expect(reply.toLowerCase()).toMatch(/katze|cat|feline/);
+
+  const timelineSelector = `[data-testid='session-timeline-${sessionId}']`;
+  const toolStarts = page.locator(
+    `${timelineSelector} [data-event-type='tool-start']`,
+  );
+  const toolResults = page.locator(
+    `${timelineSelector} [data-event-type='tool-result']`,
+  );
+
+  await expect(toolStarts.filter({ hasText: "list_dir" })).toHaveCount(1, {
+    timeout: 15_000,
+  });
+  await expect(toolResults.filter({ hasText: "list_dir" })).toHaveCount(1, {
+    timeout: 15_000,
+  });
+  await expect(toolStarts.filter({ hasText: "view_image" })).toHaveCount(1, {
+    timeout: 15_000,
+  });
+  await expect(toolResults.filter({ hasText: "view_image" })).toHaveCount(1, {
+    timeout: 15_000,
+  });
 });

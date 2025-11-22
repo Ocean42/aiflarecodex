@@ -618,12 +618,196 @@ export class BackendApp {
   }
 
   private handleAgentStreamItem(sessionId: SessionId, item: unknown): void {
-    const payload = normalizeAssistantItem(item);
-    if (!payload) {
+    if (!item || typeof item !== "object") {
       return;
     }
-    this.recordAssistantChunk(sessionId);
-    this.sessionStore.upsertAssistantMessage(sessionId, payload.id, payload.text);
+    const payload = item as Record<string, unknown>;
+    if (payload["agentEvent"] === true) {
+      const timelineEvent = this.convertAgentEvent(payload);
+      if (timelineEvent) {
+        console.log("[backend] timeline event", timelineEvent);
+        this.sessionStore.appendTimelineEvents(sessionId, [timelineEvent]);
+      }
+      return;
+    }
+    if (payload["type"] === "message") {
+      const role = typeof payload["role"] === "string" ? payload["role"] : "system";
+      if (role === "assistant") {
+        const assistant = normalizeAssistantItem(item);
+        if (!assistant) {
+          return;
+        }
+        this.recordAssistantChunk(sessionId);
+        this.sessionStore.upsertAssistantMessage(sessionId, assistant.id, assistant.text);
+        return;
+      }
+      const execOutput = this.convertExecOutputEvent(payload);
+      if (execOutput) {
+        this.sessionStore.appendTimelineEvents(sessionId, [execOutput]);
+        return;
+      }
+      const messageEvent = this.convertMessageEvent(payload, role);
+      if (messageEvent) {
+        this.sessionStore.appendTimelineEvents(sessionId, [messageEvent]);
+      }
+    }
+  }
+
+  private convertAgentEvent(event: Record<string, unknown>): SessionEventDraft | null {
+    const type = typeof event["type"] === "string" ? event["type"] : "";
+    const id = typeof event["id"] === "string" ? event["id"] : `agent-${type}-${Date.now()}`;
+    switch (type) {
+      case "plan_update": {
+        const payload = event["payload"] as
+          | {
+              explanation?: string;
+              plan?: Array<{ id?: string; step?: string; status?: string }>;
+            }
+          | undefined;
+        if (!payload?.plan) {
+          return null;
+        }
+        return {
+          type: "plan_update",
+          id,
+          explanation:
+            typeof payload.explanation === "string" ? payload.explanation : undefined,
+          plan: payload.plan
+            .filter(
+              (item) =>
+                item &&
+                typeof item.step === "string" &&
+                typeof item.status === "string",
+            )
+            .map((item) => ({
+              id: item.id,
+              step: item.step!,
+              status: item.status! as
+                | "pending"
+                | "in_progress"
+                | "completed"
+                | "blocked",
+            })),
+        } as SessionEventDraft;
+      }
+      case "tool_call_started": {
+        return {
+          type: "tool_call_started",
+          id,
+          callId: typeof event["callId"] === "string" ? event["callId"] : `call_${Date.now()}`,
+          toolName: typeof event["toolName"] === "string" ? event["toolName"] : "unknown",
+        } as SessionEventDraft;
+      }
+      case "tool_call_output": {
+        return {
+          type: "tool_call_output",
+          id,
+          callId: typeof event["callId"] === "string" ? event["callId"] : `call_${Date.now()}`,
+          toolName: typeof event["toolName"] === "string" ? event["toolName"] : "unknown",
+          status: event["status"] === "error" ? "error" : "ok",
+          durationSeconds:
+            typeof event["durationSeconds"] === "number"
+              ? event["durationSeconds"]
+              : undefined,
+          outputCount:
+            typeof event["outputCount"] === "number" ? event["outputCount"] : undefined,
+          error: typeof event["error"] === "string" ? event["error"] : undefined,
+        } as SessionEventDraft;
+      }
+      case "exec_event": {
+        const command = Array.isArray(event["command"])
+          ? (event["command"] as Array<unknown>).map((entry) =>
+              typeof entry === "string" ? entry : "",
+            )
+          : [];
+        return {
+          type: "exec_event",
+          id,
+          phase: event["phase"] === "end" ? "end" : "begin",
+          callId: typeof event["callId"] === "string" ? event["callId"] : undefined,
+          command: command.filter((entry) => entry.length > 0),
+          cwd: typeof event["cwd"] === "string" ? event["cwd"] : undefined,
+          exitCode:
+            typeof event["exitCode"] === "number" ? event["exitCode"] : undefined,
+          durationSeconds:
+            typeof event["durationSeconds"] === "number"
+              ? event["durationSeconds"]
+              : undefined,
+        } as SessionEventDraft;
+      }
+      case "reasoning_summary_delta":
+        return {
+          type: "reasoning_summary_delta",
+          id,
+          summaryIndex:
+            typeof event["summaryIndex"] === "number" ? event["summaryIndex"] : 0,
+          delta: typeof event["delta"] === "string" ? event["delta"] : "",
+        } as SessionEventDraft;
+      case "reasoning_content_delta":
+        return {
+          type: "reasoning_content_delta",
+          id,
+          contentIndex:
+            typeof event["contentIndex"] === "number" ? event["contentIndex"] : 0,
+          delta: typeof event["delta"] === "string" ? event["delta"] : "",
+        } as SessionEventDraft;
+      case "reasoning_section_break":
+        return {
+          type: "reasoning_section_break",
+          id,
+          summaryIndex:
+            typeof event["summaryIndex"] === "number" ? event["summaryIndex"] : 0,
+        } as SessionEventDraft;
+      default:
+        return null;
+    }
+  }
+
+  private convertExecOutputEvent(
+    item: Record<string, unknown>,
+  ): SessionEventDraft | null {
+    const metadata = item["metadata"] as { [key: string]: unknown } | undefined;
+    if (!metadata || metadata["source"] !== "exec") {
+      return null;
+    }
+    const text = extractText(item["content"]);
+    if (!text) {
+      return null;
+    }
+    return {
+      type: "exec_output",
+      id: typeof item["id"] === "string" ? item["id"] : `exec-output-${Date.now()}`,
+      callId: typeof metadata["call_id"] === "string" ? metadata["call_id"] : undefined,
+      stream:
+        metadata["stream"] === "stderr"
+          ? "stderr"
+          : metadata["stream"] === "combined"
+            ? "combined"
+            : "stdout",
+      text,
+    } as SessionEventDraft;
+  }
+
+  private convertMessageEvent(
+    item: Record<string, unknown>,
+    role: string,
+  ): SessionEventDraft | null {
+    const text = extractText(item["content"]);
+    if (!text) {
+      return null;
+    }
+    const segments = [
+      {
+        type: "text" as const,
+        text,
+      },
+    ];
+    return {
+      type: "message",
+      id: typeof item["id"] === "string" ? item["id"] : `evt_${Date.now()}`,
+      role: role as "system" | "tool" | "user",
+      content: segments,
+    } as SessionEventDraft;
   }
 
   private countSessionsForCli(cliId: CliId): number {
