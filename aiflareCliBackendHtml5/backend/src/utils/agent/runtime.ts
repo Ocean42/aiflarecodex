@@ -72,7 +72,9 @@ class AgentLoopRuntime {
         catch {
             // ignore logging errors
         }
-        if (!isNativeResponseItem(item)) {
+        const isNative = isNativeResponseItem(item);
+        if (!isNative) {
+            this.onAgentItem?.(this.sessionId, item);
             return;
         }
         if (item.type === "message" && item.role === "assistant") {
@@ -80,16 +82,27 @@ class AgentLoopRuntime {
             if (text.trim().length > 0) {
                 this.lastAssistantMessage = text.trim();
             }
-            this.onAgentItem?.(this.sessionId, item);
         }
+        this.onAgentItem?.(this.sessionId, item);
     }
 }
 function extractAssistantText(item) {
     const message = item;
     const segments = message.content ?? [];
     const text = segments
-        .map((segment) => "text" in segment ? segment.text ?? "" : "")
-        .join("")
+        .map((segment) => {
+        if ("text" in segment && typeof segment.text === "string") {
+            return segment.text;
+        }
+        if ("output" in segment && typeof segment.output === "string") {
+            return segment.output;
+        }
+        if ("error" in segment && typeof segment.error === "string") {
+            return segment.error;
+        }
+        return "";
+    })
+        .join(" ")
         .trim();
     return text;
 }
