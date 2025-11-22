@@ -16,6 +16,7 @@ export class AppState {
   readonly actions: Array<{ actionId: string; cliId: CliId; sessionId?: SessionId; payload: unknown }> = [];
   readonly sessionTimeline = new Map<SessionId, Array<SessionEvent>>();
   readonly openSessionIds: Array<SessionId> = [];
+  readonly minimizedSessionIds: Array<SessionId> = [];
   private readonly listeners = new Set<Listener>();
 
   subscribe(listener: Listener): () => void {
@@ -65,10 +66,16 @@ export class AppState {
 
   openSession(sessionId: SessionId): void {
     if (!this.sessions.has(sessionId)) {
+      console.warn("[appState] openSession blocked, unknown session", sessionId);
       return;
+    }
+    const minimizedIndex = this.minimizedSessionIds.indexOf(sessionId);
+    if (minimizedIndex !== -1) {
+      this.minimizedSessionIds.splice(minimizedIndex, 1);
     }
     if (!this.openSessionIds.includes(sessionId)) {
       this.openSessionIds.push(sessionId);
+      console.log("[appState] openSession", this.openSessionIds);
       this.notify();
     }
   }
@@ -79,11 +86,15 @@ export class AppState {
       return;
     }
     this.openSessionIds.splice(index, 1);
+    if (!this.minimizedSessionIds.includes(sessionId)) {
+      this.minimizedSessionIds.push(sessionId);
+    }
     this.notify();
   }
 
   setBootstrap(state: BootstrapState): void {
     const previouslyOpen = new Set(this.openSessionIds);
+    const previouslyMinimized = new Set(this.minimizedSessionIds);
     this.clis.clear();
     state.clis.forEach((cli) => this.clis.set(cli.id, cli));
     this.sessions.clear();
@@ -96,13 +107,16 @@ export class AppState {
       resetSessionTimelineUpdates(session.id);
     });
     this.openSessionIds.splice(0, this.openSessionIds.length);
+    this.minimizedSessionIds.splice(0, this.minimizedSessionIds.length);
     for (const sessionId of previouslyOpen) {
       if (this.sessions.has(sessionId)) {
         this.openSessionIds.push(sessionId);
       }
     }
-    if (this.openSessionIds.length === 0 && state.sessions.length > 0) {
-      this.openSessionIds.push(state.sessions[0]!.id);
+    for (const sessionId of previouslyMinimized) {
+      if (this.sessions.has(sessionId) && !this.openSessionIds.includes(sessionId)) {
+        this.minimizedSessionIds.push(sessionId);
+      }
     }
     this.notify();
   }

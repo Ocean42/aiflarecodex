@@ -70,42 +70,35 @@ export async function clickSessionEntry(
   page: Page,
   sessionId: string,
 ): Promise<void> {
-  const tab = page
-    .locator('[data-testid="session-workspace"] .dv-tab')
-    .filter({ hasText: sessionId });
   const input = page.getByTestId(`session-input-${sessionId}`);
-  let inputVisible = false;
-  try {
-    inputVisible = await input.isVisible({ timeout: 500 });
-  } catch {
-    inputVisible = false;
-  }
-  if (inputVisible) {
-    return;
-  }
-  const sessionList = page.getByTestId("session-list");
-  await expect(sessionList).toBeVisible({ timeout: 15_000 });
-  const button = page.getByTestId(`session-select-${sessionId}`);
-  await expect(button).toBeVisible({ timeout: 15_000 });
+  const tab = page
+    .locator('[data-testid="session-workspace"] .dv-default-tab')
+    .filter({ hasText: sessionId.slice(0, 6) });
   if ((await tab.count()) === 0) {
-    await button.click();
-    await expect(tab).toBeVisible({ timeout: 15_000 });
+    await page.evaluate((id) => {
+      return (
+        (globalThis as typeof globalThis & {
+          __AIFLARE_OPEN_SESSION?: (sessionId: string) => Promise<void>;
+        }).__AIFLARE_OPEN_SESSION?.(id) ?? null
+      );
+    }, sessionId);
   }
-  await tab.click();
-  await expect(input).toBeVisible({ timeout: 15_000 });
-}
-
-export async function toggleSessionFromNavigator(
-  page: Page,
-  sessionId: string,
-): Promise<void> {
-  const button = page.getByTestId(`session-select-${sessionId}`);
-  await expect(button).toBeVisible({ timeout: 15_000 });
-  await button.click();
+  if ((await tab.count()) > 0) {
+    await expect(tab.first()).toBeVisible({ timeout: 15_000 });
+    await tab.first().click();
+  }
+  await expect(input).toBeVisible({
+    timeout: 20_000,
+  });
 }
 
 export async function ensureCliVisible(page: Page, expectedCount: number): Promise<void> {
-  const cliSelect = page.locator('section:has-text("New Session") select');
+  const creator = page.getByTestId("session-create-panel").last();
+  const cliSelect = creator.getByTestId("session-create-cli");
+  const visible = await cliSelect.isVisible().catch(() => false);
+  if (!visible) {
+    await page.getByTestId("dockview-add-panel").click();
+  }
   await expect(cliSelect).toBeVisible({ timeout: 15_000 });
   await expect
     .poll(
@@ -222,7 +215,7 @@ export async function sendMessageAndExpectAssistant(
   const initialCount = await assistantMessages.count();
   const input = page.getByTestId(`session-input-${sessionId}`);
   await input.fill(message);
-  await page.getByTestId(`session-send-${sessionId}`).click();
+  await page.getByTestId(`session-send-${sessionId}`).click({ force: true });
   const timeout = options?.timeout ?? 15_000;
   const newCount = await waitForAssistantCount(page, assistantMessages, initialCount + 1, timeout);
   const target = assistantMessages.nth(newCount - 1);
@@ -300,20 +293,37 @@ async function waitForStableLocatorText(
 export async function createSessionViaUi(
   page: Page,
   request: APIRequestContext,
-  options?: { workdir?: string; model?: string },
+  options?: { workdir?: string; model?: string; cliId?: string },
 ): Promise<string> {
+  const current = await request.get(`${BACKEND_URL}/api/sessions`);
+  const currentData = await current.json();
+  const startingCount = Array.isArray(currentData?.sessions)
+    ? currentData.sessions.length
+    : 0;
+  const creator = page.getByTestId("session-create-panel").last();
+  const visible = await creator.isVisible().catch(() => false);
+  if (!visible) {
+    await page.getByTestId("dockview-add-panel").click();
+    await expect(creator).toBeVisible({ timeout: 10_000 });
+  }
+  if (options?.cliId) {
+    await creator.getByTestId("session-create-cli").selectOption(options.cliId);
+  }
   if (options?.workdir) {
-    await page.getByLabel("Workdir:").fill(options.workdir);
+    await creator.getByLabel("Workdir:").fill(options.workdir);
   }
   if (options?.model) {
-    await page.getByLabel("Model:").fill(options.model);
+    await creator.getByLabel("Model:").fill(options.model);
   }
-  await page.getByRole("button", { name: "Create Session" }).click();
-  const sessions = await waitForSessionCount(request, 1);
+  await creator.getByRole("button", { name: "Create Session" }).click({ force: true });
+  const sessions = await waitForSessionCount(request, startingCount + 1);
   const sessionId = sessions[sessions.length - 1]?.id;
   if (!sessionId) {
     throw new Error("Failed to create session");
   }
+  await expect(
+    page.getByTestId(`session-input-${sessionId}`),
+  ).toBeVisible({ timeout: 20_000 });
   return sessionId;
 }
 

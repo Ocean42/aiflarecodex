@@ -44,7 +44,9 @@ export function TopBarOpenableElement({
         onClick={() => setOpen((current) => !current)}
       >
         <span className="top-bar-chip-label">{label}</span>
-        <span className="top-bar-badge">{formatBadge(badgeCount)}</span>
+        <span className="top-bar-badge" data-testid={`${baseTestId}-badge`}>
+          {formatBadge(badgeCount)}
+        </span>
       </button>
       <ModalDialog
         open={open}

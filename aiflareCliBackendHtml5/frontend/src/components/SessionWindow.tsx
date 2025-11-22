@@ -3,6 +3,7 @@ import type { SessionEvent, SessionId } from "@aiflare/protocol";
 import type { ProtoClient } from "../api/protoClient.js";
 import { appState } from "../state/appState.js";
 import { calculateContextPercentRemaining } from "../utils/context.js";
+import { deriveSessionTitle } from "../utils/sessionTitle.js";
 
 type SessionWindowProps = {
   client: ProtoClient;
@@ -26,6 +27,7 @@ export function SessionWindow({
 
   const summary = appState.sessions.get(sessionId) ?? null;
   const isRunning = summary?.status === "running";
+  const title = deriveSessionTitle(summary ?? undefined, sessionId);
 
   async function handleSend(): Promise<void> {
     if (input.trim().length === 0 || sending || isRunning) {
@@ -86,7 +88,7 @@ export function SessionWindow({
 
   return (
     <section data-testid="session-window" data-session-id={sessionId}>
-      <h2>{summary?.title ?? sessionId}</h2>
+      <h2>{title}</h2>
       <ul data-testid={`session-timeline-${sessionId}`}>
         {sortedTimeline.map((event) => (
           <li key={event.id}>{renderTimelineEvent(event)}</li>

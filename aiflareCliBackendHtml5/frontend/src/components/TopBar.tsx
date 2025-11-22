@@ -2,16 +2,20 @@ import { TopBarOpenableElement } from "./TopBarOpenableElement.js";
 
 type Props = {
   brandText?: string;
+  activeCliCount: number;
   logsCount: number;
   minimizedCount: number;
+  renderClis(): JSX.Element;
   renderLogs(): JSX.Element;
   renderMinimizedSessions(): JSX.Element;
 };
 
 export function TopBar({
   brandText = "AgentMan",
+  activeCliCount,
   logsCount,
   minimizedCount,
+  renderClis,
   renderLogs,
   renderMinimizedSessions,
 }: Props): JSX.Element {
@@ -25,6 +29,13 @@ export function TopBar({
         </div>
       </div>
       <div className="top-bar-actions">
+        <TopBarOpenableElement
+          label="CLIs"
+          badgeCount={activeCliCount}
+          dialogTitle="Connected CLIs"
+          renderContent={renderClis}
+          testId="topbar-clis"
+        />
         <TopBarOpenableElement
           label="Minimized Sessions"
           badgeCount={minimizedCount}

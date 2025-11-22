@@ -10,15 +10,14 @@ import { useLocalState } from "./hooks/useLocalState.js";
 import { appState } from "./state/appState.js";
 import { TopBar } from "./components/TopBar.js";
 import {
-  SessionFormSection,
   type SessionForm,
 } from "./components/SessionFormSection.js";
 import { AuthPanel } from "./components/AuthPanel.js";
-import { LogPanel, type LogEntry } from "./components/LogPanel.js";
+import type { LogEntry } from "./components/LogPanel.js";
 import type { AuthStatus } from "./types/auth.js";
-import { SessionNavigator } from "./components/SessionNavigator.js";
 import { SessionWorkspace } from "./components/SessionWorkspace.js";
 import { SessionEventsController } from "./controllers/sessionEventsController.js";
+import { deriveSessionTitle } from "./utils/sessionTitle.js";
 import "dockview/dist/styles/dockview.css";
 import "./styles.css";
 
@@ -30,17 +29,17 @@ type AppViewModel = {
   logs: Array<LogEntry>;
   auth: AuthStatus | null;
   openSessionIds: Array<SessionId>;
+  minimizedSessionIds: Array<SessionId>;
   sync(): void;
-  handleCreateSession(): Promise<void>;
-  handleFormChange(field: keyof SessionForm, value: string): void;
-  handleToggleSession(sessionId: SessionId): Promise<void>;
   addLog(message: string): void;
   refreshBackend(): Promise<void>;
   refreshAuthStatus(): Promise<void>;
   handleLogin(cliId: string): Promise<void>;
   handleLogout(): Promise<void>;
   handleCloseSession(sessionId: SessionId): void;
+  handleCreateSessionWithForm(form: SessionForm): Promise<SessionId | null>;
   openSession(sessionId: SessionId): Promise<void>;
+  handleRestoreSession(sessionId: SessionId): Promise<void>;
 };
 
 function resolveBackendUrl(): string {
@@ -86,11 +85,13 @@ export function App(): JSX.Element {
       logs: [],
       auth: null,
       openSessionIds: [],
+      minimizedSessionIds: [],
       sync() {
         vm.clis = Array.from(appState.clis.values());
         vm.sessions = Array.from(appState.sessions.values());
         vm.sessionTimeline = new Map(appState.sessionTimeline);
         vm.openSessionIds = [...appState.openSessionIds];
+        vm.minimizedSessionIds = [...appState.minimizedSessionIds];
       },
       addLog(message: string) {
         const entry: LogEntry = {
@@ -101,35 +102,52 @@ export function App(): JSX.Element {
         vm.logs = [...vm.logs.slice(-49), entry];
         reRender();
       },
-      async handleCreateSession() {
+      async handleCreateSessionWithForm(form: SessionForm) {
         if (vm.clis.length === 0) {
           alert("No CLI available. Pair one first.");
-          return;
+          return null;
         }
-        const targetCli = vm.form.cliId || vm.clis[0]?.id;
+        const targetCli = form.cliId || vm.clis[0]?.id;
         if (!targetCli) {
           alert("No CLI selected.");
-          return;
+          return null;
         }
-        const { sessionId } = await client.createSession({
+        let sessionId: SessionId;
+        try {
+          ({ sessionId } = await client.createSession({
+            cliId: targetCli,
+            workdir: form.workdir,
+            model: form.model,
+          }));
+        } catch (error) {
+          console.error("[frontend] failed to create session", error);
+          vm.addLog("[session] failed to create session");
+          throw error;
+        }
+        const provisionalSummary: SessionSummary = {
+          id: sessionId,
           cliId: targetCli,
-          workdir: vm.form.workdir,
-          model: vm.form.model,
-        });
+          model: form.model,
+          workdir: form.workdir,
+          status: "waiting",
+          lastUpdated: new Date().toISOString(),
+          title: deriveSessionTitle(
+            {
+              id: sessionId,
+              cliId: targetCli,
+              model: form.model,
+              workdir: form.workdir,
+              status: "waiting",
+              lastUpdated: new Date().toISOString(),
+            },
+            sessionId,
+          ),
+        };
+        appState.updateSession(provisionalSummary);
         vm.addLog(`[session] created ${sessionId}`);
         await refreshFromBackend();
         await vm.openSession(sessionId);
-      },
-      handleFormChange(field: keyof SessionForm, value: string) {
-        vm.form = { ...vm.form, [field]: value };
-        reRender();
-      },
-      async handleToggleSession(sessionId: SessionId) {
-        if (vm.openSessionIds.includes(sessionId)) {
-          vm.handleCloseSession(sessionId);
-          return;
-        }
-        await vm.openSession(sessionId);
+        return sessionId;
       },
       async refreshAuthStatus() {
         try {
@@ -191,6 +209,9 @@ export function App(): JSX.Element {
         vm.sync();
         reRender();
       },
+      async handleRestoreSession(sessionId: SessionId) {
+        await vm.openSession(sessionId);
+      },
       async openSession(sessionId: SessionId) {
         appState.openSession(sessionId);
         vm.sync();
@@ -212,12 +233,19 @@ export function App(): JSX.Element {
     });
 
     const refreshFromBackend = async (): Promise<void> => {
-      const bootstrap = await client.fetchBootstrap();
-      appState.setBootstrap(bootstrap);
-      vm.sync();
-      vm.addLog(
-        `Synced backend state (clis=${bootstrap.clis.length}, sessions=${bootstrap.sessions.length})`,
-      );
+      try {
+        console.log("[frontend] fetching bootstrap");
+        const bootstrap = await client.fetchBootstrap();
+        console.log("[frontend] bootstrap result", bootstrap);
+        appState.setBootstrap(bootstrap);
+        vm.sync();
+        vm.addLog(
+          `Synced backend state (clis=${bootstrap.clis.length}, sessions=${bootstrap.sessions.length})`,
+        );
+      } catch (error) {
+        console.error("[frontend] failed to fetch bootstrap", error);
+        vm.addLog("[bootstrap] failed to sync backend");
+      }
     };
 
     appState.subscribe(() => {
@@ -226,6 +254,7 @@ export function App(): JSX.Element {
     });
 
     vm.sync();
+    console.log("[frontend] calling refreshBackend");
     void vm.refreshBackend();
     void vm.refreshAuthStatus();
 
@@ -262,19 +291,68 @@ export function App(): JSX.Element {
     );
   };
 
+  const renderClisDialog = (): JSX.Element => (
+    <ul className="cli-list">
+      {view.clis.length === 0 ? (
+        <li className="muted-text">No CLI connected.</li>
+      ) : (
+        view.clis.map((cli) => (
+          <li key={cli.id} className="cli-list-item">
+            <span className="cli-name">{cli.label ?? cli.id}</span>
+            <span className="cli-id">{cli.id}</span>
+            <span
+              className={`cli-status cli-status-${cli.status}`}
+              data-status={cli.status}
+            >
+              {cli.status}
+            </span>
+          </li>
+        ))
+      )}
+    </ul>
+  );
+
   const renderMinimizedSessionsDialog = (): JSX.Element => (
     <div className="dialog-empty-state">
-      <p className="muted-text">
-        No minimized sessions yet. Close a docked session to see it here.
-      </p>
+      {view.minimizedSessionIds.length === 0 ? (
+        <p className="muted-text">
+          No minimized sessions yet. Close a docked session to see it here.
+        </p>
+      ) : (
+        <ul className="minimized-list">
+          {view.minimizedSessionIds.map((sessionId) => {
+            const summary = view.sessions.find((s) => s.id === sessionId);
+            return (
+              <li key={sessionId} className="minimized-list-item">
+                <div className="minimized-meta">
+                  <span className="minimized-title">
+                    {deriveSessionTitle(summary, sessionId)}
+                  </span>
+                  <span className="minimized-id">{sessionId}</span>
+                </div>
+                <button
+                  type="button"
+                  className="restore-button"
+                  onClick={() => void view.handleRestoreSession(sessionId)}
+                  data-testid={`restore-session-${sessionId}`}
+                >
+                  Restore
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 
   return (
     <main className="app-shell">
       <TopBar
+        activeCliCount={view.clis.filter((cli) => cli.status === "connected").length}
         logsCount={view.logs.length}
-        minimizedCount={0}
+        minimizedCount={view.minimizedSessionIds.length}
+        renderClis={renderClisDialog}
         renderLogs={renderLogsDialog}
         renderMinimizedSessions={renderMinimizedSessionsDialog}
       />
@@ -286,30 +364,19 @@ export function App(): JSX.Element {
         onLogout={() => view.handleLogout()}
       />
       <div className="app-body">
-        <div className="sidebar">
-          <SessionFormSection
-            form={view.form}
-            clis={view.clis}
-            onFormChange={(field, value) => view.handleFormChange(field, value)}
-            onCreate={() => void view.handleCreateSession()}
-          />
-          <SessionNavigator
-            sessions={view.sessions}
-            openSessionIds={view.openSessionIds}
-            timelineBySession={view.sessionTimeline}
-            onSelect={(sessionId) => void view.handleToggleSession(sessionId)}
-          />
-        </div>
         <div className="session-window-panel">
           <SessionWorkspace
             client={client}
             sessions={view.sessions}
             openSessionIds={view.openSessionIds}
             timelineBySession={view.sessionTimeline}
+            clis={view.clis}
+            defaultForm={view.form}
+            onCreateSession={(form) => view.handleCreateSessionWithForm(form)}
+            onCloseSession={(sessionId) => view.handleCloseSession(sessionId)}
           />
         </div>
       </div>
-      <LogPanel logs={view.logs} />
     </main>
   );
 }

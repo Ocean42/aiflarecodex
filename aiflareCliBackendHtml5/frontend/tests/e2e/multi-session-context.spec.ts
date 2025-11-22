@@ -4,11 +4,12 @@ import {
   buildFrontendEntryUrl,
   waitForBackendCli,
   waitForSessionCount,
-  clickSessionEntry,
   sendMessageAndExpectAssistant,
   expectLatestAssistantMessage,
   resetBackendState,
   ensureCliVisible,
+  createSessionViaUi,
+  clickSessionEntry,
 } from "./utils.js";
 
 const FRONTEND_ENTRY_URL = buildFrontendEntryUrl();
@@ -20,9 +21,9 @@ test("sessions keep independent context", async ({ page, request }) => {
   await ensureCliVisible(page, 1);
 
   // Session 1 setup
-  await page.getByRole("button", { name: "Create Session" }).click();
-  const sessionsAfterFirst = await waitForSessionCount(request, 1);
-  const session1Id = sessionsAfterFirst[sessionsAfterFirst.length - 1]?.id;
+  const session1Id = await createSessionViaUi(page, request, {
+    workdir: "/tmp/session1",
+  });
   expect(session1Id).toBeTruthy();
   await clickSessionEntry(page, session1Id!);
   await sendMessageAndExpectAssistant(
@@ -33,9 +34,9 @@ test("sessions keep independent context", async ({ page, request }) => {
   );
 
   // Session 2 setup
-  await page.getByRole("button", { name: "Create Session" }).click();
-  const sessionsAfterSecond = await waitForSessionCount(request, 2);
-  const session2Id = sessionsAfterSecond[sessionsAfterSecond.length - 1]?.id;
+  const session2Id = await createSessionViaUi(page, request, {
+    workdir: "/tmp/session2",
+  });
   expect(session2Id).toBeTruthy();
   await clickSessionEntry(page, session2Id!);
   await sendMessageAndExpectAssistant(
@@ -55,6 +56,6 @@ test("sessions keep independent context", async ({ page, request }) => {
 
 async function expectNoSessionPlaceholder(page: Page): Promise<void> {
   await expect(
-    page.locator("text=Select a session to start chatting."),
+    page.locator("text=Click + to create a new session."),
   ).toHaveCount(0, { timeout: 5_000 });
 }

@@ -3,11 +3,10 @@ import { test, expect } from "./baseTest.js";
 import {
   buildFrontendEntryUrl,
   waitForBackendCli,
-  waitForSessionCount,
   clickSessionEntry,
-  toggleSessionFromNavigator,
   resetBackendState,
   ensureCliVisible,
+  createSessionViaUi,
 } from "./utils.js";
 
 const FRONTEND_ENTRY_URL = buildFrontendEntryUrl();
@@ -16,33 +15,34 @@ function sessionInputTestId(sessionId: string): string {
   return `session-input-${sessionId}`;
 }
 
-function sessionTabLocator(page: Page, sessionId: string) {
-  return page
-    .locator('[data-testid="session-workspace"] .dv-tab')
-    .filter({ hasText: sessionId });
+async function closeSessionTab(page: Page, sessionId: string): Promise<void> {
+  const tab = page
+    .locator('[data-testid="session-workspace"] .dv-default-tab')
+    .filter({ hasText: sessionId.slice(0, 6) });
+  await expect(tab.first()).toBeVisible({ timeout: 15_000 });
+  const closeButton = tab.first().locator(".dv-default-tab-action");
+  await tab.first().hover();
+  await closeButton.click();
 }
 
-test("session navigator toggles dockview panels", async ({ page, request }) => {
+test("dockview tabs close to minimized and can be restored", async ({ page, request }) => {
   await resetBackendState(request);
   await waitForBackendCli(request);
   await page.goto(FRONTEND_ENTRY_URL);
   await ensureCliVisible(page, 1);
 
-  // Create two sessions and open their panels
-  await page.getByRole("button", { name: "Create Session" }).click();
-  const sessionsAfterFirst = await waitForSessionCount(request, 1);
-  const session1Id = sessionsAfterFirst[sessionsAfterFirst.length - 1]?.id;
+  // Create two sessions in dock
+  const session1Id = await createSessionViaUi(page, request, {
+    workdir: "/tmp/dock-d1",
+  });
   expect(session1Id).toBeTruthy();
   await clickSessionEntry(page, session1Id!);
 
-  await page.getByRole("button", { name: "Create Session" }).click();
-  const sessionsAfterSecond = await waitForSessionCount(request, 2);
-  const session2Id = sessionsAfterSecond[sessionsAfterSecond.length - 1]?.id;
+  const session2Id = await createSessionViaUi(page, request, {
+    workdir: "/tmp/dock-d2",
+  });
   expect(session2Id).toBeTruthy();
   await clickSessionEntry(page, session2Id!);
-
-  await expect(sessionTabLocator(page, session1Id!)).toBeVisible();
-  await expect(sessionTabLocator(page, session2Id!)).toBeVisible();
 
   // Tabs switch focus without closing
   await clickSessionEntry(page, session1Id!);
@@ -50,17 +50,24 @@ test("session navigator toggles dockview panels", async ({ page, request }) => {
   await clickSessionEntry(page, session2Id!);
   await expect(page.getByTestId(sessionInputTestId(session2Id!))).toBeVisible();
 
-  // Clicking navigator entry closes a session without affecting the other
-  await toggleSessionFromNavigator(page, session1Id!);
-  await expect(sessionTabLocator(page, session1Id!)).toHaveCount(0);
-  await expect(page.getByTestId(sessionInputTestId(session2Id!))).toBeVisible();
+  // Closing moves to minimized
+  await closeSessionTab(page, session1Id!);
+  await expect(page.getByTestId(sessionInputTestId(session1Id!))).toHaveCount(0);
+  await expect(page.getByTestId("topbar-minimized-badge")).toHaveText(/1/);
 
-  // Reopen the first session and verify placeholder after all closed
-  await clickSessionEntry(page, session1Id!);
-  await expect(sessionTabLocator(page, session1Id!)).toBeVisible();
-  await toggleSessionFromNavigator(page, session1Id!);
-  await expect(sessionTabLocator(page, session1Id!)).toHaveCount(0);
-  await toggleSessionFromNavigator(page, session2Id!);
-  await expect(sessionTabLocator(page, session2Id!)).toHaveCount(0);
-  await expect(page.locator("text=Select a session to start chatting.")).toBeVisible();
+  // Restore from minimized dialog
+  await page.getByTestId("topbar-minimized-toggle").click();
+  const minimizedDialog = page.getByTestId("topbar-minimized-modal");
+  await expect(minimizedDialog).toBeVisible({ timeout: 5_000 });
+  await minimizedDialog.getByTestId(`restore-session-${session1Id!}`).click();
+  await expect(page.getByTestId(sessionInputTestId(session1Id!))).toBeVisible({
+    timeout: 10_000,
+  });
+
+  // Close all and expect placeholder
+  await closeSessionTab(page, session1Id!);
+  await closeSessionTab(page, session2Id!);
+  await expect(page.getByTestId("session-create-panel").first()).toBeVisible({
+    timeout: 5_000,
+  });
 });

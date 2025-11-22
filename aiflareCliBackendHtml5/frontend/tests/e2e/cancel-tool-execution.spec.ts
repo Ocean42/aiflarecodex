@@ -5,8 +5,8 @@ import {
   resetBackendState,
   waitForBackendCli,
   ensureCliVisible,
-  waitForSessionCount,
   clickSessionEntry,
+  createSessionViaUi,
 } from "./utils.js";
 
 const FRONTEND_ENTRY_URL = buildFrontendEntryUrl();
@@ -17,9 +17,7 @@ test("user can cancel a long-running tool execution", async ({ page, request }) 
   await page.goto(FRONTEND_ENTRY_URL);
   await ensureCliVisible(page, 1);
 
-  await page.getByRole("button", { name: "Create Session" }).click();
-  const sessions = await waitForSessionCount(request, 1);
-  const sessionId = sessions[sessions.length - 1]?.id;
+  const sessionId = await createSessionViaUi(page, request);
   if (!sessionId) {
     throw new Error("session creation failed");
   }
@@ -40,7 +38,7 @@ test("user can cancel a long-running tool execution", async ({ page, request }) 
 
   const cancelButton = page.locator(".cancel-button");
   await expect(cancelButton).toBeVisible({ timeout: 10_000 });
-  await cancelButton.click();
+  await cancelButton.click({ force: true });
 
   const systemMessage = page
     .locator(

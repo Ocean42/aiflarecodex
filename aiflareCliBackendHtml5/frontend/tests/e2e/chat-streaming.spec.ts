@@ -2,12 +2,12 @@ import { test, expect } from "./baseTest.js";
 import {
   buildFrontendEntryUrl,
   waitForBackendCli,
-  waitForSessionCount,
   clickSessionEntry,
   resetBackendState,
   expectLatestAssistantMessage,
   getAssistantChunkCount,
   ensureCliVisible,
+  createSessionViaUi,
 } from "./utils.js";
 
 const FRONTEND_ENTRY_URL = buildFrontendEntryUrl();
@@ -21,9 +21,7 @@ test("frontend receives the same number of message updates as backend stream chu
   await page.goto(FRONTEND_ENTRY_URL);
   await ensureCliVisible(page, 1);
 
-  await page.getByRole("button", { name: "Create Session" }).click();
-  const sessions = await waitForSessionCount(request, 1);
-  const sessionId = sessions[sessions.length - 1]?.id;
+  const sessionId = await createSessionViaUi(page, request);
   expect(sessionId).toBeTruthy();
   await clickSessionEntry(page, sessionId!);
 
