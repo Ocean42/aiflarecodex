@@ -67,7 +67,9 @@ test("dockview tabs close to minimized and can be restored", async ({ page, requ
   // Close all and expect placeholder
   await closeSessionTab(page, session1Id!);
   await closeSessionTab(page, session2Id!);
-  await expect(page.getByTestId("session-create-panel").first()).toBeVisible({
-    timeout: 5_000,
-  });
+  await expect(
+    page.locator('[data-testid="session-workspace"] .dv-default-tab'),
+  ).toHaveCount(0);
+  await expect(page.getByText("Click + to create a new session.")).toBeVisible();
+  await expect(page.getByTestId("session-create-panel")).toHaveCount(0);
 });

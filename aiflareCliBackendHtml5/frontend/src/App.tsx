@@ -145,8 +145,6 @@ export function App(): JSX.Element {
         };
         appState.updateSession(provisionalSummary);
         vm.addLog(`[session] created ${sessionId}`);
-        await refreshFromBackend();
-        await vm.openSession(sessionId);
         return sessionId;
       },
       async refreshAuthStatus() {
@@ -369,12 +367,13 @@ export function App(): JSX.Element {
             client={client}
             sessions={view.sessions}
             openSessionIds={view.openSessionIds}
-            timelineBySession={view.sessionTimeline}
-            clis={view.clis}
-            defaultForm={view.form}
-            onCreateSession={(form) => view.handleCreateSessionWithForm(form)}
-            onCloseSession={(sessionId) => view.handleCloseSession(sessionId)}
-          />
+          timelineBySession={view.sessionTimeline}
+          clis={view.clis}
+          defaultForm={view.form}
+          onCreateSession={(form) => view.handleCreateSessionWithForm(form)}
+          onOpenSession={(sessionId) => view.openSession(sessionId)}
+          onCloseSession={(sessionId) => view.handleCloseSession(sessionId)}
+        />
         </div>
       </div>
     </main>

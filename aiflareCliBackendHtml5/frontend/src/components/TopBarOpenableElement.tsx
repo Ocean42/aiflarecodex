@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ModalDialog } from "./ModalDialog.js";
 
 type Props = {
@@ -33,6 +33,12 @@ export function TopBarOpenableElement({
       `topbar-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+$/, "")}`,
     [label, testId],
   );
+
+  useEffect(() => {
+    if (open && badgeCount === 0) {
+      setOpen(false);
+    }
+  }, [badgeCount, open]);
 
   return (
     <div className="top-bar-openable">

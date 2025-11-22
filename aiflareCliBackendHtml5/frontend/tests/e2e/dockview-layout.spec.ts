@@ -22,6 +22,8 @@ test("dockview fills the page, + opens creator, session replaces form", async ({
   const box = await workspace.boundingBox();
   expect(box?.height ?? 0).toBeGreaterThan(500);
   expect(box?.width ?? 0).toBeGreaterThan(800);
+  await expect(page.getByText("Click + to create a new session.")).toBeVisible();
+  await expect(page.getByTestId("session-create-panel")).toHaveCount(0);
 
   const addButton = page.getByTestId("dockview-add-panel");
   await expect(addButton).toBeVisible({ timeout: 10_000 });

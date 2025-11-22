@@ -93,8 +93,6 @@ export class AppState {
   }
 
   setBootstrap(state: BootstrapState): void {
-    const previouslyOpen = new Set(this.openSessionIds);
-    const previouslyMinimized = new Set(this.minimizedSessionIds);
     this.clis.clear();
     state.clis.forEach((cli) => this.clis.set(cli.id, cli));
     this.sessions.clear();
@@ -108,16 +106,6 @@ export class AppState {
     });
     this.openSessionIds.splice(0, this.openSessionIds.length);
     this.minimizedSessionIds.splice(0, this.minimizedSessionIds.length);
-    for (const sessionId of previouslyOpen) {
-      if (this.sessions.has(sessionId)) {
-        this.openSessionIds.push(sessionId);
-      }
-    }
-    for (const sessionId of previouslyMinimized) {
-      if (this.sessions.has(sessionId) && !this.openSessionIds.includes(sessionId)) {
-        this.minimizedSessionIds.push(sessionId);
-      }
-    }
     this.notify();
   }
 

@@ -315,7 +315,9 @@ export async function createSessionViaUi(
   if (options?.model) {
     await creator.getByLabel("Model:").fill(options.model);
   }
-  await creator.getByRole("button", { name: "Create Session" }).click({ force: true });
+  await creator.scrollIntoViewIfNeeded();
+  const submitButton = creator.getByRole("button", { name: "Create Session" });
+  await submitButton.evaluate((button) => (button as HTMLButtonElement).click());
   const sessions = await waitForSessionCount(request, startingCount + 1);
   const sessionId = sessions[sessions.length - 1]?.id;
   if (!sessionId) {
