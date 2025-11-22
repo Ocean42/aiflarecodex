@@ -92,7 +92,6 @@ class SessionRunner {
     this.store.appendMessage(this.sessionId, "user", item.prompt);
     try {
       const reply = await this.runtime.runPrompt(item.prompt);
-      this.store.appendMessage(this.sessionId, "assistant", reply);
       item.resolve({ reply });
     } finally {
       this.store.updateSummary(this.sessionId, { status: "waiting" });
