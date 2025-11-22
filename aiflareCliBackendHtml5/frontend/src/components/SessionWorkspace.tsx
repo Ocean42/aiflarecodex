@@ -9,7 +9,6 @@ import {
   DockviewDefaultTab,
   DockviewReact,
   type DockviewReadyEvent,
-  type IDockviewHeaderActionsProps,
   type IDockviewPanelProps,
 } from "dockview";
 import type { ProtoClient } from "../api/protoClient.js";
@@ -41,21 +40,15 @@ type Props = {
   onCreateSession(form: SessionForm): Promise<SessionId | null>;
   onOpenSession(sessionId: SessionId): Promise<void>;
   onCloseSession(sessionId: SessionId): void;
+  onActionsChange?: (
+    actions:
+      | {
+          addSessionPanel(): void;
+          addGroup(): void;
+        }
+      | null,
+  ) => void;
 };
-
-function AddPanelButton({ onClick }: { onClick(): void }): JSX.Element {
-  return (
-    <button
-      type="button"
-      className="dockview-header-add"
-      onClick={() => onClick()}
-      data-testid="dockview-add-panel"
-      aria-label="Add session panel"
-    >
-      +
-    </button>
-  );
-}
 
 type SessionPanelProps = {
   panelProps: IDockviewPanelProps<SessionPanelParams>;
@@ -169,6 +162,7 @@ export function SessionWorkspace({
   onCreateSession,
   onOpenSession,
   onCloseSession,
+  onActionsChange,
 }: Props): JSX.Element {
   const apiRef = useRef<DockviewReadyEvent["api"]>();
   const panelCounterRef = useRef(1);
@@ -182,6 +176,7 @@ export function SessionWorkspace({
     return () => {
       disposablesRef.current.forEach((disposable) => disposable.dispose());
       disposablesRef.current = [];
+      onActionsChange?.(null);
     };
   }, []);
 
@@ -238,7 +233,7 @@ export function SessionWorkspace({
   }, []);
 
   const addPanel = useCallback(
-    (panelMode: PanelMode): string | null => {
+    (panelMode: PanelMode, targetGroupId?: string): string | null => {
       const api = apiRef.current;
       if (!api) {
         return null;
@@ -246,12 +241,11 @@ export function SessionWorkspace({
       const panelId = `panel-${panelCounterRef.current++}`;
       const params = buildPanelParams(panelId, panelMode);
       const createPosition =
-        panelMode.mode === "create" && api.groups.length > 0
-          ? {
-              referenceGroup: api.groups[api.groups.length - 1],
-              direction: "below" as const,
-            }
-          : undefined;
+        targetGroupId != null
+          ? { referenceGroup: targetGroupId }
+          : panelMode.mode === "create" && api.groups.length > 0
+            ? { referenceGroup: api.groups[api.groups.length - 1], direction: "below" as const }
+            : undefined;
       const title =
         panelMode.mode === "session"
           ? deriveSessionTitle(sessionLookup.get(panelMode.sessionId), panelMode.sessionId)
@@ -326,6 +320,22 @@ export function SessionWorkspace({
     addPanelRef.current?.({ mode: "create" });
   }, []);
 
+  const handleAddPanelToGroup = useCallback((groupId: string) => {
+    addPanelRef.current?.({ mode: "create" }, groupId);
+  }, []);
+
+  const handleAddGroup = useCallback(() => {
+    const api = apiRef.current;
+    if (!api) {
+      return;
+    }
+    const group = api.addGroup();
+    group.api.setActive();
+    if (!primaryGroupIdRef.current) {
+      primaryGroupIdRef.current = group.id;
+    }
+  }, []);
+
   const components = useMemo(
     () => ({
       sessionPanel: (panelProps: IDockviewPanelProps<SessionPanelParams>) => (
@@ -343,16 +353,20 @@ export function SessionWorkspace({
 
   const headerActionsComponent = useMemo(
     () =>
-      function HeaderActions(props: IDockviewHeaderActionsProps): JSX.Element | null {
-        if (!primaryGroupIdRef.current) {
-          primaryGroupIdRef.current = props.group.id;
-        }
-        if (primaryGroupIdRef.current !== props.group.id) {
-          return null;
-        }
-        return <AddPanelButton onClick={handleAddPanelClick} />;
+      function HeaderActions(props: { group: { id: string } }): JSX.Element {
+        return (
+          <button
+            type="button"
+            className="dv-action-item"
+            data-testid={`group-add-${props.group.id}`}
+            aria-label="Add panel to group"
+            onClick={() => handleAddPanelToGroup(props.group.id)}
+          >
+            +
+          </button>
+        );
       },
-    [handleAddPanelClick],
+    [handleAddPanelToGroup],
   );
 
   const watermarkComponent = useMemo(
@@ -409,14 +423,17 @@ export function SessionWorkspace({
       disposablesRef.current.push(removeDisposable, addDisposable);
       setHasPanels(event.api.panels.length > 0);
       syncPanelData();
+      onActionsChange?.({
+        addSessionPanel: handleAddPanelClick,
+        addGroup: handleAddGroup,
+      });
     },
-    [onCloseSession, syncPanelData],
+    [handleAddGroup, handleAddPanelClick, onActionsChange, onCloseSession, syncPanelData],
   );
 
   return (
     <div className="session-workspace" data-testid="session-workspace">
       <DockviewReact
-        hideBorders
         components={components}
         defaultTabComponent={DockviewDefaultTab}
         leftHeaderActionsComponent={headerActionsComponent}

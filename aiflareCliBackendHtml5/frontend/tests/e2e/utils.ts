@@ -97,7 +97,9 @@ export async function ensureCliVisible(page: Page, expectedCount: number): Promi
   const cliSelect = creator.getByTestId("session-create-cli");
   const visible = await cliSelect.isVisible().catch(() => false);
   if (!visible) {
-    await page.getByTestId("dockview-add-panel").click();
+    const addButton = page.getByTestId("workspace-add-session");
+    await expect(addButton).toBeEnabled({ timeout: 10_000 });
+    await addButton.click();
   }
   await expect(cliSelect).toBeVisible({ timeout: 15_000 });
   await expect
@@ -303,7 +305,9 @@ export async function createSessionViaUi(
   const creator = page.getByTestId("session-create-panel").last();
   const visible = await creator.isVisible().catch(() => false);
   if (!visible) {
-    await page.getByTestId("dockview-add-panel").click();
+    const addButton = page.getByTestId("workspace-add-session");
+    await expect(addButton).toBeEnabled({ timeout: 10_000 });
+    await addButton.click();
     await expect(creator).toBeVisible({ timeout: 10_000 });
   }
   if (options?.cliId) {
@@ -315,7 +319,6 @@ export async function createSessionViaUi(
   if (options?.model) {
     await creator.getByLabel("Model:").fill(options.model);
   }
-  await creator.scrollIntoViewIfNeeded();
   const submitButton = creator.getByRole("button", { name: "Create Session" });
   await submitButton.evaluate((button) => (button as HTMLButtonElement).click());
   const sessions = await waitForSessionCount(request, startingCount + 1);

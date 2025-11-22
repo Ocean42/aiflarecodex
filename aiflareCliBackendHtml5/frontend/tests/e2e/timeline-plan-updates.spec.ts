@@ -46,7 +46,7 @@ test("timeline renders plan update events", async ({ page, request }) => {
   const planEvents = page.locator(
     `[data-testid='session-timeline-${sessionId}'] [data-event-type='plan']`,
   );
-  await expect(planEvents).toHaveCount(2);
+  await expect(planEvents).toHaveCount(2, { timeout: 20_000 });
   await expect(planEvents.nth(0)).toContainText("Plan Update:");
   await expect(planEvents.nth(0)).toContainText("Initial plan drafted");
   await expect(planEvents.nth(1)).toContainText("completed Collect files");

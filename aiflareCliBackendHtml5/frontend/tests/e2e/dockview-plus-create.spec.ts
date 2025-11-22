@@ -15,15 +15,17 @@ test("dockview + spawns create panels and preserves existing forms", async ({ pa
 
   await page.goto(FRONTEND_ENTRY_URL);
 
-  const addButton = page.getByTestId("dockview-add-panel");
+  const addButton = page.getByTestId("workspace-add-session");
   await expect(addButton).toBeVisible();
+  await expect(addButton).toBeEnabled({ timeout: 10_000 });
   await expect(page.getByTestId("session-create-panel")).toHaveCount(0);
 
   await addButton.click();
+  await expect(page.getByTestId("session-create-panel")).toHaveCount(1, { timeout: 10_000 });
   await addButton.click();
 
   const creators = page.getByTestId("session-create-panel");
-  await expect(creators).toHaveCount(2);
+  await expect(creators).toHaveCount(2, { timeout: 10_000 });
 
   const firstCreator = creators.first();
   await firstCreator.getByTestId("session-create-cli").selectOption(cliId);

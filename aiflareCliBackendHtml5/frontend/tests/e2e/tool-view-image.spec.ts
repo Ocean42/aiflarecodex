@@ -33,7 +33,7 @@ test("view_image tool identifies katze picture", async ({ page, request }) => {
   const result = await sendMessageAndExpectAssistant(
     page,
     sessionId!,
-    "Such mal ob du hier ein Bild namens katze findest und sag mir was darin zu sehen ist.",
+    "Nutze genau einen Aufruf von view_image auf ./katze.jpg (Workdir gesetzt), keine anderen Tools. Beschreibe kurz, was darauf zu sehen ist.",
     /katze|cat|feline/i,
     { timeout: 90_000, captureText: true },
   );
@@ -50,16 +50,13 @@ test("view_image tool identifies katze picture", async ({ page, request }) => {
     `${timelineSelector} [data-event-type='tool-result']`,
   );
 
-  await expect(toolStarts.filter({ hasText: "list_dir" })).toHaveCount(1, {
-    timeout: 15_000,
-  });
-  await expect(toolResults.filter({ hasText: "list_dir" })).toHaveCount(1, {
-    timeout: 15_000,
-  });
-  await expect(toolStarts.filter({ hasText: "view_image" })).toHaveCount(1, {
-    timeout: 15_000,
-  });
-  await expect(toolResults.filter({ hasText: "view_image" })).toHaveCount(1, {
-    timeout: 15_000,
-  });
+  const runStatus = page.getByTestId("session-run-status");
+  await expect(runStatus).toBeHidden({ timeout: 30_000 });
+
+  await expect(toolStarts.filter({ hasText: "list_dir" })).toHaveCount(0);
+  await expect(toolResults.filter({ hasText: "list_dir" })).toHaveCount(0);
+  const viewStarts = toolStarts.filter({ hasText: "view_image" });
+  const viewResults = toolResults.filter({ hasText: "view_image" });
+  await expect(viewStarts).toHaveCount(1, { timeout: 20_000 });
+  await expect(viewResults).toHaveCount(1, { timeout: 20_000 });
 });

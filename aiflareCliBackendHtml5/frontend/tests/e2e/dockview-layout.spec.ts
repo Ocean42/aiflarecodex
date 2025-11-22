@@ -35,8 +35,19 @@ test("dockview fills the page, + opens creator, session replaces form", async ({
   await expect(authModal.getByTestId("auth-state")).toBeVisible();
   await authModal.getByRole("button", { name: "Close" }).click();
 
-  const addButton = page.getByTestId("dockview-add-panel");
+  const addButton = page.getByTestId("workspace-add-session");
   await expect(addButton).toBeVisible({ timeout: 10_000 });
+  await expect(addButton).toBeEnabled({ timeout: 10_000 });
+  const groupCount = workspace.locator(".dv-groupview");
+  await expect(groupCount).toHaveCount(1);
+  const addGroupButton = page.getByTestId("workspace-add-group");
+  await expect(addGroupButton).toBeEnabled({ timeout: 10_000 });
+  await addGroupButton.click();
+  await expect(groupCount).toHaveCount(2);
+  const secondGroupAdd = groupCount.nth(1).locator('[data-testid^="group-add-"]');
+  await expect(secondGroupAdd).toBeVisible();
+  await secondGroupAdd.click();
+  await expect(page.getByTestId("session-create-panel")).toHaveCount(1, { timeout: 10_000 });
   await addButton.click();
 
   const creator = page.getByTestId("session-create-panel").last();

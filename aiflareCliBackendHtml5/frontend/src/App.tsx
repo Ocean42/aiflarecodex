@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   CliSummary,
   SessionEvent,
@@ -271,6 +271,11 @@ export function App(): JSX.Element {
     return () => clearInterval(timer);
   }, [view]);
 
+  const [workspaceActions, setWorkspaceActions] = useState<{
+    addSessionPanel(): void;
+    addGroup(): void;
+  } | null>(null);
+
   const renderLogsDialog = (): JSX.Element => {
     if (view.logs.length === 0) {
       return <p className="muted-text">No client logs yet.</p>;
@@ -367,6 +372,26 @@ export function App(): JSX.Element {
           </div>
         )}
       />
+      <div className="action-bar">
+        <button
+          type="button"
+          className="action-bar-button"
+          data-testid="workspace-add-session"
+          onClick={() => workspaceActions?.addSessionPanel()}
+          disabled={!workspaceActions}
+        >
+          + Session
+        </button>
+        <button
+          type="button"
+          className="action-bar-button"
+          data-testid="workspace-add-group"
+          onClick={() => workspaceActions?.addGroup()}
+          disabled={!workspaceActions}
+        >
+          + Group
+        </button>
+      </div>
       <div className="app-body">
         <div className="session-window-panel">
           <SessionWorkspace
@@ -379,6 +404,7 @@ export function App(): JSX.Element {
             onCreateSession={(form) => view.handleCreateSessionWithForm(form)}
             onOpenSession={(sessionId) => view.openSession(sessionId)}
             onCloseSession={(sessionId) => view.handleCloseSession(sessionId)}
+            onActionsChange={(actions) => setWorkspaceActions(actions)}
           />
         </div>
       </div>

@@ -38,6 +38,30 @@ body {
   height: 100%;
 }
 
+.action-bar {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.5rem 0.75rem;
+  background: #0b1222;
+  border-bottom: 1px solid #111827;
+}
+
+.action-bar-button {
+  border: none;
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  background: linear-gradient(135deg, #38bdf8, #0ea5e9);
+  color: #0b162b;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.action-bar-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .sidebar section,
 .session-window-panel section,
 .session-input,
@@ -218,6 +242,24 @@ body {
   box-sizing: border-box;
   position: relative;
   z-index: 1;
+}
+
+.dv-groupview {
+  border: 1px solid #d7dce5;
+  border-radius: 6px;
+  background: #f9fafb;
+  overflow: hidden;
+}
+
+.dv-tabstrip {
+  background: #0f172a;
+  color: #f8fafc;
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid #0b1220;
+}
+
+.dv-content-container {
+  background: #ffffff;
 }
 
 .dockview-header-add {
