@@ -93,23 +93,23 @@ export function SessionWindow({
 function renderTimelineEvent(event: SessionEvent): JSX.Element {
   switch (event.type) {
     case "message": {
-      const prefix = event.role === "assistant" ? "AI" : event.role === "user" ? "You" : "System";
-      const text = event.content
-        .map((segment) => {
-          if ("text" in segment && segment.text) {
-            return segment.text;
-          }
-          if ("output" in segment && segment.output) {
-            return segment.output;
-          }
-          return "";
-        })
-        .filter(Boolean)
-        .join(" ")
-        .trim();
+      const prefix =
+        event.role === "assistant" ? "AI" : event.role === "user" ? "You" : "System";
+      const messageLines = extractMessageLines(event);
       return (
-        <div data-event-type="message" data-role={event.role}>
-          <strong>{prefix}:</strong> <span>{text || "<empty>"}</span>
+        <div data-event-type="message" data-role={event.role} className="timeline-message">
+          <strong>{prefix}:</strong>
+          <div className="message-content">
+            {messageLines.map((line, index) => (
+              <div
+                key={`${event.id}-line-${index}`}
+                className={`message-line${line.isPlaceholder ? " message-line-empty" : ""}`}
+                data-message-line
+              >
+                {line.text}
+              </div>
+            ))}
+          </div>
         </div>
       );
     }
@@ -158,4 +158,32 @@ function renderTimelineEvent(event: SessionEvent): JSX.Element {
     default:
       return <div>{JSON.stringify(event)}</div>;
   }
+}
+
+function extractMessageLines(event: Extract<SessionEvent, { type: "message" }>): Array<{
+  text: string;
+  isPlaceholder: boolean;
+}> {
+  const raw = event.content
+    .map((segment) => {
+      if ("text" in segment && typeof segment.text === "string") {
+        return segment.text;
+      }
+      if ("output" in segment && typeof segment.output === "string") {
+        return segment.output;
+      }
+      if ("error" in segment && typeof segment.error === "string") {
+        return segment.error;
+      }
+      return "";
+    })
+    .join("");
+  const normalized = raw.replace(/\r\n/g, "\n").trim();
+  if (normalized.length === 0) {
+    return [{ text: "<empty>", isPlaceholder: true }];
+  }
+  return normalized.split("\n").map((line) => ({
+    text: line.length > 0 ? line : "\u00a0",
+    isPlaceholder: line.trim().length === 0,
+  }));
 }

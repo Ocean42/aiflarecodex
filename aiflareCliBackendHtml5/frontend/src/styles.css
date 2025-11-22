@@ -103,6 +103,32 @@ body {
   margin-bottom: 0.5rem;
 }
 
+.timeline-message {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.timeline-message strong {
+  font-size: 0.9rem;
+}
+
+.message-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.message-line {
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+
+.message-line-empty {
+  color: #9ca3af;
+  font-style: italic;
+}
+
 .session-workspace {
   flex: 1;
   min-height: 0;
