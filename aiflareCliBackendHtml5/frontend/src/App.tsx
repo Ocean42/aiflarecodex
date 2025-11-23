@@ -377,7 +377,12 @@ export function App(): JSX.Element {
           type="button"
           className="action-bar-button"
           data-testid="workspace-add-session"
-          onClick={() => workspaceActions?.addSessionPanel()}
+          onClick={() => {
+            console.log("[app] action-bar add-session click", {
+              hasActions: !!workspaceActions,
+            });
+            workspaceActions?.addSessionPanel();
+          }}
           disabled={!workspaceActions}
         >
           + Session
@@ -386,7 +391,12 @@ export function App(): JSX.Element {
           type="button"
           className="action-bar-button"
           data-testid="workspace-add-group"
-          onClick={() => workspaceActions?.addGroup()}
+          onClick={() => {
+            console.log("[app] action-bar add-group click", {
+              hasActions: !!workspaceActions,
+            });
+            workspaceActions?.addGroup();
+          }}
           disabled={!workspaceActions}
         >
           + Group
@@ -404,7 +414,12 @@ export function App(): JSX.Element {
             onCreateSession={(form) => view.handleCreateSessionWithForm(form)}
             onOpenSession={(sessionId) => view.openSession(sessionId)}
             onCloseSession={(sessionId) => view.handleCloseSession(sessionId)}
-            onActionsChange={(actions) => setWorkspaceActions(actions)}
+            onActionsChange={(actions) => {
+              console.log("[app] workspace actions updated", {
+                hasActions: !!actions,
+              });
+              setWorkspaceActions(actions);
+            }}
           />
         </div>
       </div>

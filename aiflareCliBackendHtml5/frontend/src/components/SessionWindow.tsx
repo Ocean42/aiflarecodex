@@ -1,9 +1,20 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { SessionEvent, SessionId } from "@aiflare/protocol";
+import { useEffect, useLayoutEffect, useRef } from "react";
+import type { SessionEvent, SessionId, SessionSummary } from "@aiflare/protocol";
 import type { ProtoClient } from "../api/protoClient.js";
 import { appState } from "../state/appState.js";
 import { calculateContextPercentRemaining } from "../utils/context.js";
+import { getSessionState, setSessionRunning } from "../state/sessionUpdateTracker.js";
 import { deriveSessionTitle } from "../utils/sessionTitle.js";
+import { useLocalState } from "../hooks/useLocalState.js";
+
+type WindowLocalState = {
+  input: string;
+  sending: boolean;
+  canceling: boolean;
+  autoScroll: boolean;
+  lastScroll: { scrollTop: number; scrollHeight: number } | null;
+  lastSessionId: SessionId | null;
+};
 
 type SessionWindowProps = {
   client: ProtoClient;
@@ -16,26 +27,76 @@ export function SessionWindow({
   sessionId,
   timeline,
 }: SessionWindowProps): JSX.Element {
-  const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
-  const [canceling, setCanceling] = useState(false);
+  const [view, , reRender] = useLocalState<WindowLocalState>(() => ({
+    input: "",
+    sending: false,
+    canceling: false,
+    autoScroll: true,
+    lastScroll: null,
+    lastSessionId: null,
+  }));
   const currentRequest = useRef<AbortController | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const timelineRef = useRef<HTMLUListElement | null>(null);
 
   useEffect(() => {
-    setInput("");
-  }, [sessionId]);
-
-  const summary = appState.sessions.get(sessionId) ?? null;
-  const isRunning = summary?.status === "running";
-  const title = deriveSessionTitle(summary ?? undefined, sessionId);
-
-  async function handleSend(): Promise<void> {
-    if (input.trim().length === 0 || sending || isRunning) {
+    if (view.lastSessionId === sessionId) {
       return;
     }
-    const content = input.trim();
-    setSending(true);
+    view.lastSessionId = sessionId;
+    view.input = "";
+    view.sending = false;
+    view.canceling = false;
+    view.autoScroll = true;
+    view.lastScroll = null;
+    reRender();
+  }, [reRender, sessionId]);
+
+  function refreshAutoScrollFlag(): boolean {
+    const el = timelineRef.current;
+    if (!el) {
+      return false;
+    }
+    const distanceFromBottom = el.scrollHeight - (el.scrollTop + el.clientHeight);
+    const isNearBottom = distanceFromBottom < 8;
+    if (view.autoScroll !== isNearBottom) {
+      view.autoScroll = isNearBottom;
+      reRender();
+    }
+    return isNearBottom;
+  }
+
+  const summary = appState.sessions.get(sessionId) ?? null;
+  const trackerState = getSessionState(sessionId);
+  const isRunning = trackerState.running;
+  const title = deriveSessionTitle(summary ?? undefined, sessionId);
+
+  function updateSessionStatus(status: SessionSummary["status"]): void {
+    const current = appState.sessions.get(sessionId);
+    if (!current) {
+      return;
+    }
+    appState.updateSession({
+      ...current,
+      status,
+      lastUpdated: new Date().toISOString(),
+    });
+  }
+
+  async function handleSend(): Promise<void> {
+    const contentFromDom = inputRef.current?.value ?? view.input;
+    const content = contentFromDom.trim();
+    if (content.length === 0 || view.sending || isRunning) {
+      return;
+    }
+    (window as typeof window & { __lastSessionSend?: { sessionId: SessionId; content: string } })
+      .__lastSessionSend = { sessionId, content };
+    console.log("[session-window] sending prompt", { sessionId, content });
+    view.input = content;
+    view.sending = true;
+    reRender();
+    setSessionRunning(sessionId, true);
+    updateSessionStatus("running");
     const controller = new AbortController();
     currentRequest.current = controller;
     try {
@@ -43,21 +104,26 @@ export function SessionWindow({
         signal: controller.signal,
       });
     } catch (error) {
+      console.error("[session-window] send prompt failed", error);
       if (!(error instanceof DOMException && error.name === "AbortError")) {
         console.error("[session-window] failed to send message", error);
+        setSessionRunning(sessionId, false);
+        updateSessionStatus("waiting");
       }
     } finally {
-      setInput("");
-      setSending(false);
+      view.input = "";
+      view.sending = false;
+      reRender();
       currentRequest.current = null;
     }
   }
 
   async function handleCancel(): Promise<void> {
-    if (canceling) {
+    if (view.canceling) {
       return;
     }
-    setCanceling(true);
+    view.canceling = true;
+    reRender();
     currentRequest.current?.abort();
     currentRequest.current = null;
     try {
@@ -65,25 +131,20 @@ export function SessionWindow({
     } catch (error) {
       console.error("[session-window] failed to cancel session", error);
     } finally {
-      setCanceling(false);
+      setSessionRunning(sessionId, false);
+      view.canceling = false;
+      reRender();
     }
   }
 
-  const sortedTimeline = useMemo(
-    () =>
-      [...timeline].sort((a, b) => {
-        const cmp = a.createdAt.localeCompare(b.createdAt);
-        if (cmp !== 0) {
-          return cmp;
-        }
-        return a.id.localeCompare(b.id);
-      }),
-    [timeline],
-  );
-  const contextPercent = useMemo(
-    () => calculateContextPercentRemaining(sortedTimeline, summary?.model),
-    [sortedTimeline, summary?.model],
-  );
+  const sortedTimeline = [...timeline].sort((a, b) => {
+    const cmp = a.createdAt.localeCompare(b.createdAt);
+    if (cmp !== 0) {
+      return cmp;
+    }
+    return a.id.localeCompare(b.id);
+  });
+  const contextPercent = calculateContextPercentRemaining(sortedTimeline, summary?.model);
   const contextSeverity =
     contextPercent > 40 ? "ok" : contextPercent > 25 ? "warn" : "danger";
 
@@ -92,11 +153,37 @@ export function SessionWindow({
     const element = inputRef.current;
     element.style.height = "auto";
     element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
-  }, [input]);
+  }, [view.input]);
+
+  useLayoutEffect(() => {
+    const el = timelineRef.current;
+    if (!el) {
+      return;
+    }
+    if (view.autoScroll) {
+      el.scrollTop = el.scrollHeight;
+    } else if (view.lastScroll) {
+      const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+      el.scrollTop = Math.min(view.lastScroll.scrollTop, maxScroll);
+    }
+    view.lastScroll = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight };
+  }, [sortedTimeline, view.autoScroll, view.lastScroll]);
 
   return (
     <section data-testid="session-window" data-session-id={sessionId}>
-      <ul data-testid={`session-timeline-${sessionId}`}>
+      <ul
+        data-testid={`session-timeline-${sessionId}`}
+        ref={timelineRef}
+        onScroll={() => {
+          refreshAutoScrollFlag();
+          if (timelineRef.current) {
+            view.lastScroll = {
+              scrollTop: timelineRef.current.scrollTop,
+              scrollHeight: timelineRef.current.scrollHeight,
+            };
+          }
+        }}
+      >
         {sortedTimeline.map((event) => (
           <li key={event.id}>{renderTimelineEvent(event)}</li>
         ))}
@@ -111,11 +198,11 @@ export function SessionWindow({
           </span>
         ) : null}
       </div>
-      {sending || isRunning ? (
+      {view.sending || isRunning ? (
         <div className="session-status" data-testid="session-run-status">
           <span className="session-spinner" aria-label="Assistant running" />
           <span>
-            {canceling
+            {view.canceling
               ? "Stopping current run..."
               : isRunning
                 ? "Assistant is running…"
@@ -126,9 +213,9 @@ export function SessionWindow({
               type="button"
               className="cancel-button"
               onClick={() => void handleCancel()}
-              disabled={canceling}
+              disabled={view.canceling}
             >
-              {canceling ? "Canceling…" : "Cancel"}
+              {view.canceling ? "Canceling…" : "Cancel"}
             </button>
           ) : null}
         </div>
@@ -140,8 +227,11 @@ export function SessionWindow({
         <textarea
           id={`session-input-field-${sessionId}`}
           data-testid={`session-input-${sessionId}`}
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
+          value={view.input}
+          onChange={(event) => {
+            view.input = event.target.value;
+            reRender();
+          }}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
@@ -156,9 +246,11 @@ export function SessionWindow({
           type="button"
           data-testid={`session-send-${sessionId}`}
           onClick={() => void handleSend()}
-          disabled={sending || input.trim().length === 0 || isRunning}
+          disabled={view.sending || isRunning}
+          data-running={String(isRunning)}
+          data-sending={String(view.sending)}
         >
-          {sending ? "Sending..." : "Send"}
+          {view.sending ? "Sending..." : "Send"}
         </button>
       </div>
     </section>

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
+import type { ComponentProps, PointerEventHandler } from "react";
 import type {
   CliSummary,
   SessionEvent,
@@ -16,6 +17,14 @@ import { SessionWindow } from "./SessionWindow.js";
 import { SessionCreatorPanel } from "./SessionCreatorPanel.js";
 import type { SessionForm } from "./SessionFormSection.js";
 import { deriveSessionTitle } from "../utils/sessionTitle.js";
+import { useLocalState } from "../hooks/useLocalState.js";
+import {
+  getSessionState,
+  isSessionRunning,
+  listenOnStateChanges,
+  setSessionUnread,
+  setSessionVisible,
+} from "../state/sessionUpdateTracker.js";
 
 type SessionPanelParams = {
   panelId: string;
@@ -29,6 +38,17 @@ type SessionPanelParams = {
 };
 
 type PanelMode = { mode: "create" } | { mode: "session"; sessionId: SessionId };
+
+type WorkspaceLocalState = {
+  badgeVersion: number;
+  stateVersion: number;
+  panelCounter: number;
+  panelForSession: Map<SessionId, string>;
+  panelModes: Map<string, PanelMode>;
+  disposables: Array<{ dispose(): void }>;
+  primaryGroupId: string | null;
+  lastActiveSessionId: SessionId | null;
+};
 
 type Props = {
   client: ProtoClient;
@@ -66,29 +86,13 @@ function SessionPanel({
   onBecameSession,
 }: SessionPanelProps): JSX.Element {
   const { params } = panelProps;
-  const [mode, setMode] = useState<PanelMode>(() =>
+  const mode: PanelMode =
     params.mode === "session" && params.sessionId
       ? { mode: "session", sessionId: params.sessionId }
-      : { mode: "create" },
-  );
+      : { mode: "create" };
 
-  useEffect(() => {
-    if (params.mode === "session" && params.sessionId) {
-      setMode((current) =>
-        current.mode === "session" && current.sessionId === params.sessionId
-          ? current
-          : { mode: "session", sessionId: params.sessionId! },
-      );
-    } else if (params.mode === "create") {
-      setMode((current) => (current.mode === "create" ? current : { mode: "create" }));
-    }
-  }, [params.mode, params.sessionId]);
-
-  const sessionsById = useMemo(() => {
-    const map = new Map<SessionId, SessionSummary>();
-    params.sessions.forEach((session) => map.set(session.id, session));
-    return map;
-  }, [params.sessions]);
+  const sessionsById = new Map<SessionId, SessionSummary>();
+  params.sessions.forEach((session) => sessionsById.set(session.id, session));
 
   const timeline =
     mode.mode === "session" && mode.sessionId
@@ -96,24 +100,18 @@ function SessionPanel({
       : [];
 
   const isSessionOpen =
-    mode.mode === "session" &&
-    !!mode.sessionId &&
-    params.openSessionIds.includes(mode.sessionId);
+    mode.mode === "session" && !!mode.sessionId && params.openSessionIds.includes(mode.sessionId);
 
-  const handleCreate = useCallback(
-    async (form: SessionForm) => {
-      const createdId = await onCreateSession(form);
-      if (!createdId) {
-        throw new Error("Failed to create session");
-      }
-      setMode({ mode: "session", sessionId: createdId });
-      const title = deriveSessionTitle(sessionsById.get(createdId), createdId);
-      panelProps.api.setTitle(title);
-      onBecameSession(panelProps.api.id, createdId);
-      await onOpenSession(createdId);
-    },
-    [onBecameSession, onCreateSession, onOpenSession, panelProps.api, sessionsById],
-  );
+  async function handleCreate(form: SessionForm): Promise<void> {
+    const createdId = await onCreateSession(form);
+    if (!createdId) {
+      throw new Error("Failed to create session");
+    }
+    const title = deriveSessionTitle(sessionsById.get(createdId), createdId);
+    panelProps.api.setTitle(title);
+    onBecameSession(panelProps.api.id, createdId);
+    await onOpenSession(createdId);
+  }
 
   if (mode.mode === "session" && mode.sessionId && isSessionOpen) {
     const summary = sessionsById.get(mode.sessionId);
@@ -165,29 +163,52 @@ export function SessionWorkspace({
   onActionsChange,
 }: Props): JSX.Element {
   const apiRef = useRef<DockviewReadyEvent["api"]>();
-  const panelCounterRef = useRef(1);
-  const panelForSessionRef = useRef(new Map<SessionId, string>());
-  const panelModesRef = useRef(new Map<string, PanelMode>());
-  const disposablesRef = useRef<Array<{ dispose(): void }>>([]);
-  const primaryGroupIdRef = useRef<string | null>(null);
-  const [hasPanels, setHasPanels] = useState(false);
+  const [view, , reRender] = useLocalState<WorkspaceLocalState>(({ self }) => ({
+    ...self,
+    badgeVersion: 0,
+    stateVersion: 0,
+    panelCounter: 1,
+    panelForSession: new Map<SessionId, string>(),
+    panelModes: new Map<string, PanelMode>(),
+    disposables: [],
+    primaryGroupId: null,
+    lastActiveSessionId: null,
+  }));
 
   useEffect(() => {
     return () => {
-      disposablesRef.current.forEach((disposable) => disposable.dispose());
-      disposablesRef.current = [];
+      view.disposables.forEach((disposable) => disposable.dispose());
+      view.disposables = [];
       onActionsChange?.(null);
     };
   }, []);
 
-  const sessionLookup = useMemo(() => {
-    const map = new Map<SessionId, SessionSummary>();
-    sessions.forEach((session) => map.set(session.id, session));
-    return map;
-  }, [sessions]);
+  useEffect(() => {
+    const unsubscribe = listenOnStateChanges(() => {
+      view.badgeVersion += 1;
+      view.stateVersion += 1;
+      reRender();
+    });
+    return () => unsubscribe();
+  }, [reRender, view]);
 
-  const buildPanelParams = useCallback(
-    (panelId: string, mode: PanelMode): SessionPanelParams => ({
+  const sessionLookup = new Map<SessionId, SessionSummary>();
+  sessions.forEach((session) => sessionLookup.set(session.id, session));
+  let timelineVersion = 0;
+  timelineBySession.forEach((events) => {
+    timelineVersion += events.length;
+  });
+
+  function markSessionSeen(sessionId: SessionId): void {
+    setSessionUnread(sessionId, false);
+  }
+
+  function isSessionUnread(sessionId: SessionId): boolean {
+    return getSessionState(sessionId).unread;
+  }
+
+  function buildPanelParams(panelId: string, mode: PanelMode): SessionPanelParams {
+    return {
       panelId,
       mode: mode.mode,
       sessionId: mode.mode === "session" ? mode.sessionId : undefined,
@@ -196,248 +217,338 @@ export function SessionWorkspace({
       sessions,
       openSessionIds,
       timelineBySession,
-    }),
-    [clis, defaultForm, openSessionIds, sessions, timelineBySession],
-  );
+    };
+  }
 
-  const syncPanelData = useCallback(() => {
+  function buildTabTitle(mode: PanelMode): string {
+    if (mode.mode !== "session") {
+      return "New Session";
+    }
+    const session = sessionLookup.get(mode.sessionId);
+    const baseTitle = deriveSessionTitle(session, mode.sessionId);
+    const state = getSessionState(mode.sessionId);
+    const running = session?.status === "running" || state.running || isSessionRunning(mode.sessionId);
+    const unread = state.unread || isSessionUnread(mode.sessionId);
+    const spinner = running ? "⏳ " : "";
+    const unreadDot = unread ? "• " : "";
+    return `${spinner}${unreadDot}${baseTitle}`;
+  }
+
+  function syncPanelData(): void {
     const api = apiRef.current;
     if (!api) {
       return;
     }
     for (const panel of api.panels) {
-      const panelMode = panelModesRef.current.get(panel.id);
+      const panelMode = view.panelModes.get(panel.id);
       if (!panelMode) {
         continue;
       }
       panel.update({ params: buildPanelParams(panel.id, panelMode) });
       if (panelMode.mode === "session") {
-        const title = deriveSessionTitle(
-          sessionLookup.get(panelMode.sessionId),
-          panelMode.sessionId,
-        );
+        const title = buildTabTitle(panelMode);
         if (panel.title !== title) {
           panel.setTitle(title);
         }
       }
     }
-  }, [buildPanelParams, sessionLookup]);
+  }
 
   useEffect(() => {
     syncPanelData();
-  }, [syncPanelData]);
+  }, [sessions, openSessionIds, timelineBySession, view.badgeVersion, timelineVersion]);
 
-  const attachSessionToPanel = useCallback((panelId: string, sessionId: SessionId) => {
-    panelForSessionRef.current.set(sessionId, panelId);
-    panelModesRef.current.set(panelId, { mode: "session", sessionId });
-  }, []);
+  function getActiveSessionId(): SessionId | null {
+    const api = apiRef.current;
+    if (!api) {
+      return null;
+    }
+    const activePanel = api.activeGroup?.activePanel ?? api.activePanel;
+    const mode = activePanel ? view.panelModes.get(activePanel.id) : undefined;
+    return mode?.mode === "session" ? mode.sessionId : null;
+  }
 
-  const addPanel = useCallback(
-    (panelMode: PanelMode, targetGroupId?: string): string | null => {
-      const api = apiRef.current;
-      if (!api) {
-        return null;
-      }
-      const panelId = `panel-${panelCounterRef.current++}`;
-      const params = buildPanelParams(panelId, panelMode);
-      const createPosition =
-        targetGroupId != null
-          ? { referenceGroup: targetGroupId }
-          : panelMode.mode === "create" && api.groups.length > 0
-            ? { referenceGroup: api.groups[api.groups.length - 1], direction: "below" as const }
-            : undefined;
-      const title =
-        panelMode.mode === "session"
-          ? deriveSessionTitle(sessionLookup.get(panelMode.sessionId), panelMode.sessionId)
-          : "New Session";
-      const created = api.addPanel({
-        id: panelId,
-        component: "sessionPanel",
-        title,
-        params,
-        position: createPosition,
-      });
-      created.api.setActive();
-      api.layout(api.width, api.height, true);
-      panelModesRef.current.set(panelId, panelMode);
-      if (panelMode.mode === "session") {
-        attachSessionToPanel(panelId, panelMode.sessionId);
-      }
-      setHasPanels(true);
-      return panelId;
-    },
-    [attachSessionToPanel, buildPanelParams, sessionLookup],
-  );
-  const addPanelRef = useRef(addPanel);
-  useEffect(() => {
-    addPanelRef.current = addPanel;
-  }, [addPanel]);
-
-  const ensurePanelForSession = useCallback(
-    (sessionId: SessionId) => {
-      const api = apiRef.current;
-      if (!api) {
+  function applyVisibility(activeSessionId: SessionId | null): void {
+    view.panelModes.forEach((entry) => {
+      if (entry.mode !== "session") {
         return;
       }
-      const existingPanelId = panelForSessionRef.current.get(sessionId);
-      if (existingPanelId) {
-        const existingPanel = api.getPanel(existingPanelId);
-        if (existingPanel) {
-          existingPanel.api.setActive();
-          return;
+      const isActive = entry.sessionId === activeSessionId;
+      if (isActive) {
+        markSessionSeen(entry.sessionId);
+      }
+      setSessionVisible(entry.sessionId, isActive);
+    });
+    view.lastActiveSessionId = activeSessionId;
+  }
+
+  useEffect(() => {
+    const activeSession = getActiveSessionId();
+    applyVisibility(activeSession);
+  }, [view.badgeVersion, view.stateVersion]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      const activeSession = getActiveSessionId();
+      applyVisibility(activeSession);
+    }, 200);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  function syncActiveTabClasses(): void {
+    const api = apiRef.current;
+    if (!api) {
+      return;
+    }
+    const activeGroupId = api.activeGroup?.id;
+    api.groups.forEach((group) => {
+      const tabs = group.element.querySelectorAll<HTMLElement>(".dv-tab");
+      tabs.forEach((tab) => {
+        if (group.id !== activeGroupId) {
+          tab.classList.remove("dv-active-tab");
         }
-        panelForSessionRef.current.delete(sessionId);
+      });
+    });
+  }
+
+  function attachSessionToPanel(panelId: string, sessionId: SessionId): void {
+    view.panelForSession.set(sessionId, panelId);
+    view.panelModes.set(panelId, { mode: "session", sessionId });
+  }
+
+  function addPanel(panelMode: PanelMode, targetGroupId?: string): string | null {
+    const api = apiRef.current;
+    if (!api) {
+      return null;
+    }
+    console.log("[workspace] addPanel begin", {
+      mode: panelMode.mode,
+      targetGroupId,
+      groups: api.groups.map((g) => g.id),
+      panels: api.panels.length,
+    });
+    const panelId = `panel-${view.panelCounter++}`;
+    const params = buildPanelParams(panelId, panelMode);
+    const refGroupId =
+      api.activeGroup?.id ??
+      view.primaryGroupId ??
+      api.groups[0]?.id;
+    if (!refGroupId && api.groups.length === 0) {
+      const group = api.addGroup();
+      group.api.setActive();
+      view.primaryGroupId = group.id;
+      return addPanel(panelMode, group.id);
+    }
+    const createPosition =
+      targetGroupId != null
+        ? { referenceGroup: targetGroupId }
+        : panelMode.mode === "create" && api.groups.length > 0
+          ? { referenceGroup: api.groups[api.groups.length - 1], direction: "below" as const }
+          : refGroupId
+            ? { referenceGroup: refGroupId }
+            : undefined;
+    const title = panelMode.mode === "session" ? buildTabTitle(panelMode) : "New Session";
+    const created = api.addPanel({
+      id: panelId,
+      component: "sessionPanel",
+      title,
+      params,
+      position: createPosition,
+    });
+    created.api.setActive();
+    if (panelMode.mode === "session") {
+      markSessionSeen(panelMode.sessionId);
+      setSessionVisible(panelMode.sessionId, true);
+      view.lastActiveSessionId = panelMode.sessionId;
+    }
+    api.layout(api.width, api.height, true);
+    view.panelModes.set(panelId, panelMode);
+    if (panelMode.mode === "session") {
+      attachSessionToPanel(panelId, panelMode.sessionId);
+    }
+    console.log("[workspace] addPanel end", {
+      id: panelId,
+      mode: panelMode.mode,
+      groups: api.groups.map((g) => g.id),
+      panels: api.panels.length,
+    });
+    return panelId;
+  }
+
+  const addPanelRef = useRef<(mode: PanelMode, targetGroupId?: string) => string | null>();
+  useEffect(() => {
+    addPanelRef.current = addPanel;
+  });
+
+  function ensurePanelForSession(sessionId: SessionId): void {
+    const api = apiRef.current;
+    if (!api) {
+      return;
+    }
+    const existingPanelId = view.panelForSession.get(sessionId);
+    if (existingPanelId) {
+      const existingPanel = api.getPanel(existingPanelId);
+      if (existingPanel) {
+        return;
       }
-      const panelId = addPanel({ mode: "session", sessionId });
-      if (panelId) {
-        const panel = api.getPanel(panelId);
-        panel?.api.setActive();
-      }
-    },
-    [addPanel],
-  );
+      view.panelForSession.delete(sessionId);
+    }
+    const panelId = addPanel({ mode: "session", sessionId });
+    if (panelId) {
+      const panel = api.getPanel(panelId);
+      panel?.api.setActive();
+      markSessionSeen(sessionId);
+      setSessionVisible(sessionId, true);
+    }
+  }
 
   useEffect(() => {
     openSessionIds.forEach((sessionId) => {
       ensurePanelForSession(sessionId);
     });
-  }, [ensurePanelForSession, openSessionIds]);
+  }, [openSessionIds]);
 
-  const handleBecameSession = useCallback(
-    (panelId: string, sessionId: SessionId) => {
-      attachSessionToPanel(panelId, sessionId);
-      const api = apiRef.current;
-      const panel = api?.getPanel(panelId);
-      if (panel) {
-        panel.update({ params: buildPanelParams(panelId, { mode: "session", sessionId }) });
-        panel.api.setActive();
-      }
-    },
-    [attachSessionToPanel, buildPanelParams],
-  );
+  function handleBecameSession(panelId: string, sessionId: SessionId): void {
+    attachSessionToPanel(panelId, sessionId);
+    const api = apiRef.current;
+    const panel = api?.getPanel(panelId);
+    if (panel) {
+      panel.update({ params: buildPanelParams(panelId, { mode: "session", sessionId }) });
+      panel.api.setActive();
+      markSessionSeen(sessionId);
+      setSessionVisible(sessionId, true);
+    }
+  }
 
-  const handleAddPanelClick = useCallback(() => {
+  function handleAddPanelClick(): void {
+    console.log("[workspace] add panel click");
     addPanelRef.current?.({ mode: "create" });
-  }, []);
+  }
 
-  const handleAddPanelToGroup = useCallback((groupId: string) => {
+  function handleAddPanelToGroup(groupId: string): void {
+    console.log("[workspace] add panel to group", groupId);
     addPanelRef.current?.({ mode: "create" }, groupId);
-  }, []);
+  }
 
-  const handleAddGroup = useCallback(() => {
+  function handleAddGroup(): void {
+    console.log("[workspace] add group requested");
     const api = apiRef.current;
     if (!api) {
+      console.warn("[workspace] addGroup blocked, api missing");
       return;
     }
     const group = api.addGroup();
+    console.log("[workspace] group added", { id: group.id, count: api.groups.length });
     group.api.setActive();
-    if (!primaryGroupIdRef.current) {
-      primaryGroupIdRef.current = group.id;
+    api.layout(api.width, api.height, true);
+    if (!view.primaryGroupId) {
+      view.primaryGroupId = group.id;
     }
-  }, []);
+  }
 
-  const components = useMemo(
-    () => ({
-      sessionPanel: (panelProps: IDockviewPanelProps<SessionPanelParams>) => (
-        <SessionPanel
-          panelProps={panelProps}
-          client={client}
-          onCreateSession={onCreateSession}
-          onOpenSession={onOpenSession}
-          onBecameSession={handleBecameSession}
-        />
-      ),
-    }),
-    [client, handleBecameSession, onCreateSession, onOpenSession],
+  const components = {
+    sessionPanel: (panelProps: IDockviewPanelProps<SessionPanelParams>) => (
+      <SessionPanel
+        panelProps={panelProps}
+        client={client}
+        onCreateSession={onCreateSession}
+        onOpenSession={onOpenSession}
+        onBecameSession={handleBecameSession}
+      />
+    ),
+  };
+  const HeaderActions = ({ group }: { group: { id: string } }) => (
+    <button
+      type="button"
+      className="dv-action-item"
+      data-testid={`group-add-${group.id}`}
+      aria-label="Add panel to group"
+      onClick={() => handleAddPanelToGroup(group.id)}
+    >
+      +
+    </button>
   );
 
-  const headerActionsComponent = useMemo(
-    () =>
-      function HeaderActions(props: { group: { id: string } }): JSX.Element {
-        return (
-          <button
-            type="button"
-            className="dv-action-item"
-            data-testid={`group-add-${props.group.id}`}
-            aria-label="Add panel to group"
-            onClick={() => handleAddPanelToGroup(props.group.id)}
-          >
-            +
-          </button>
-        );
-      },
-    [handleAddPanelToGroup],
-  );
+  const Watermark = () => <div className="dockview-watermark"></div>;
 
-  const watermarkComponent = useMemo(
-    () =>
-      function Watermark(): JSX.Element {
-        return (
-          <div className="dockview-watermark">
-          </div>
-        );
-      },
-    [],
-  );
+  const SessionTab = (props: ComponentProps<typeof DockviewDefaultTab>) => {
+    const handlePointerDown: PointerEventHandler<HTMLDivElement> = (event) => {
+      const mode = view.panelModes.get(props.api.id);
+      const sessionId = mode?.mode === "session" ? mode.sessionId : null;
+      applyVisibility(sessionId);
+      props.onPointerDown?.(event);
+    };
+    return <DockviewDefaultTab {...props} onPointerDown={handlePointerDown} />;
+  };
 
-  const handleReady = useCallback(
-    (event: DockviewReadyEvent) => {
-      apiRef.current = event.api;
-      disposablesRef.current.forEach((disposable) => disposable.dispose());
-      disposablesRef.current = [];
-      event.api.clear();
-      primaryGroupIdRef.current = null;
-      if (event.api.groups.length === 0) {
-        const group = event.api.addGroup();
-        group.api.setActive();
-        primaryGroupIdRef.current = group.id;
+  function handleReady(event: DockviewReadyEvent): void {
+    console.log("[workspace] dockview ready, groups", event.api.groups.length);
+    apiRef.current = event.api;
+    view.disposables.forEach((disposable) => disposable.dispose());
+    view.disposables = [];
+    event.api.clear();
+    view.primaryGroupId = null;
+    view.lastActiveSessionId = null;
+    sessions.forEach((session) => setSessionVisible(session.id, false));
+    if (event.api.groups.length === 0) {
+      const group = event.api.addGroup();
+      group.api.setActive();
+      view.primaryGroupId = group.id;
+    }
+    view.panelModes.clear();
+    view.panelForSession.clear();
+    const removeDisposable = event.api.onDidRemovePanel((panel) => {
+      const mode = view.panelModes.get(panel.id);
+      view.panelModes.delete(panel.id);
+      if (mode?.mode === "session" && mode.sessionId) {
+        if (view.panelForSession.get(mode.sessionId) === panel.id) {
+          view.panelForSession.delete(mode.sessionId);
+        }
+        setSessionVisible(mode.sessionId, false);
+        onCloseSession(mode.sessionId);
       }
-      panelModesRef.current.clear();
-      panelForSessionRef.current.clear();
-      setHasPanels(false);
-      const removeDisposable = event.api.onDidRemovePanel((panel) => {
-        const mode = panelModesRef.current.get(panel.id);
-        panelModesRef.current.delete(panel.id);
-        if (mode?.mode === "session" && mode.sessionId) {
-          if (panelForSessionRef.current.get(mode.sessionId) === panel.id) {
-            panelForSessionRef.current.delete(mode.sessionId);
-          }
-          onCloseSession(mode.sessionId);
-        }
-        setHasPanels((event.api.panels.length ?? 0) > 0);
-        if (event.api.panels.length === 0) {
-          event.api.clear();
-          panelModesRef.current.clear();
-          panelForSessionRef.current.clear();
-          primaryGroupIdRef.current = null;
-          if (event.api.groups.length === 0) {
-            const group = event.api.addGroup();
-            group.api.setActive();
-            primaryGroupIdRef.current = group.id;
-          }
-        }
+    });
+    const addDisposable = event.api.onDidAddPanel(() => {
+      console.log("[workspace] panel added; panels", event.api.panels.length);
+      reRender();
+    });
+    const activeDisposable = event.api.onDidActivePanelChange((panel) => {
+      const mode = panel ? view.panelModes.get(panel.id) : undefined;
+      const nextSessionId = mode?.mode === "session" ? mode.sessionId : null;
+      applyVisibility(nextSessionId);
+      syncActiveTabClasses();
+    });
+    const activeGroupDisposable = event.api.onDidActiveGroupChange(() => {
+      console.log("[workspace] active group changed", {
+        active: event.api.activeGroup?.id,
+        groups: event.api.groups.map((g) => g.id),
       });
-      const addDisposable = event.api.onDidAddPanel(() => {
-        setHasPanels((event.api.panels.length ?? 0) > 0);
-      });
-      disposablesRef.current.push(removeDisposable, addDisposable);
-      setHasPanels(event.api.panels.length > 0);
-      syncPanelData();
-      onActionsChange?.({
-        addSessionPanel: handleAddPanelClick,
-        addGroup: handleAddGroup,
-      });
-    },
-    [handleAddGroup, handleAddPanelClick, onActionsChange, onCloseSession, syncPanelData],
-  );
+      const activeGroupSessionId =
+        event.api.activeGroup?.activePanel
+          ? (() => {
+              const mode = view.panelModes.get(event.api.activeGroup!.activePanel.id);
+              return mode?.mode === "session" ? mode.sessionId : null;
+            })()
+          : null;
+      applyVisibility(activeGroupSessionId);
+      syncActiveTabClasses();
+    });
+    view.disposables.push(removeDisposable, addDisposable, activeDisposable, activeGroupDisposable);
+    syncActiveTabClasses();
+    syncPanelData();
+    onActionsChange?.({
+      addSessionPanel: handleAddPanelClick,
+      addGroup: handleAddGroup,
+    });
+  }
 
   return (
     <div className="session-workspace" data-testid="session-workspace">
       <DockviewReact
         components={components}
-        defaultTabComponent={DockviewDefaultTab}
-        leftHeaderActionsComponent={headerActionsComponent}
-        watermarkComponent={watermarkComponent}
+        defaultTabComponent={SessionTab}
+        leftHeaderActionsComponent={HeaderActions}
+        watermarkComponent={Watermark}
         onReady={handleReady}
       />
     </div>

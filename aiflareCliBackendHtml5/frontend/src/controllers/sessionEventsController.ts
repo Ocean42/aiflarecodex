@@ -1,7 +1,12 @@
 import type { SessionEventPayload } from "../api/protoClient.js";
 import type { ProtoClient } from "../api/protoClient.js";
 import { appState } from "../state/appState.js";
-import { recordSessionTimelineUpdate } from "../state/sessionUpdateTracker.js";
+import {
+  getSessionState,
+  recordSessionTimelineUpdate,
+  setSessionRunning,
+  setSessionUnread,
+} from "../state/sessionUpdateTracker.js";
 
 export class SessionEventsController {
   private unsubscribe?: () => void;
@@ -38,6 +43,14 @@ export class SessionEventsController {
     }
     if (event.summary) {
       appState.updateSession(event.summary);
+      if (event.summary.status === "running") {
+        setSessionRunning(event.sessionId, true);
+      } else {
+        setSessionRunning(event.sessionId, false);
+        if (!getSessionState(event.sessionId).visible) {
+          setSessionUnread(event.sessionId, true);
+        }
+      }
     }
     if (event.events.length > 0) {
       let assistantCount = 0;
@@ -50,6 +63,20 @@ export class SessionEventsController {
         recordSessionTimelineUpdate(event.sessionId);
       }
       appState.appendSessionTimeline(event.sessionId, event.events);
+      if (!event.summary && assistantCount > 0) {
+        const current = appState.sessions.get(event.sessionId);
+        if (current?.status === "running") {
+          appState.updateSession({
+            ...current,
+            status: "waiting",
+            lastUpdated: new Date().toISOString(),
+          });
+        }
+        setSessionRunning(event.sessionId, false);
+        if (!getSessionState(event.sessionId).visible) {
+          setSessionUnread(event.sessionId, true);
+        }
+      }
     }
   }
 }

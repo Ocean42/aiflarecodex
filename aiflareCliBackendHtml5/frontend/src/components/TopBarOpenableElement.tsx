@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
 import { ModalDialog } from "./ModalDialog.js";
+import { useLocalState } from "../hooks/useLocalState.js";
 
 type Props = {
   label: string;
@@ -30,22 +30,25 @@ export function TopBarOpenableElement({
   renderContent,
   testId,
 }: Props): JSX.Element {
-  const [open, setOpen] = useState(false);
-  const baseTestId = useMemo(
-    () =>
-      testId ??
-      `topbar-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+$/, "")}`,
-    [label, testId],
-  );
+  const [state, , reRender] = useLocalState<{ open: boolean }>(({ self }) => ({
+    ...self,
+    open: false,
+  }));
+  const baseTestId =
+    testId ??
+    `topbar-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+$/, "")}`;
 
   return (
     <div className="top-bar-openable">
       <button
         type="button"
         className="top-bar-chip"
-        aria-expanded={open}
+        aria-expanded={state.open}
         data-testid={`${baseTestId}-toggle`}
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => {
+          state.open = !state.open;
+          reRender();
+        }}
       >
         <span className="top-bar-chip-label">{label}</span>
         <span
@@ -57,9 +60,12 @@ export function TopBarOpenableElement({
         </span>
       </button>
       <ModalDialog
-        open={open}
+        open={state.open}
         title={dialogTitle ?? label}
-        onClose={() => setOpen(false)}
+        onClose={() => {
+          state.open = false;
+          reRender();
+        }}
         testId={`${baseTestId}-modal`}
       >
         {renderContent()}

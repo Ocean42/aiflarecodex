@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
 import type { CliSummary } from "@aiflare/protocol";
 import type { SessionForm } from "./SessionFormSection.js";
+import { useLocalState } from "../hooks/useLocalState.js";
 
 type Props = {
   clis: Array<CliSummary>;
@@ -13,53 +13,58 @@ export function SessionCreatorPanel({
   initialForm,
   onCreate,
 }: Props): JSX.Element {
-  const [form, setForm] = useState<SessionForm>(initialForm);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [view, , reRender] = useLocalState<{
+    form: SessionForm;
+    submitting: boolean;
+    error: string | null;
+    lastInitialKey: string;
+    lastCliKey: string;
+  }>(() => ({
+    form: { ...initialForm },
+    submitting: false,
+    error: null,
+    lastInitialKey: "",
+    lastCliKey: "",
+  }));
 
-  useEffect(() => {
-    setForm((current) => ({
-      ...current,
-      cliId: current.cliId || initialForm.cliId,
-      workdir: current.workdir || initialForm.workdir,
-      model: current.model || initialForm.model,
-    }));
-  }, [initialForm]);
-
-  useEffect(() => {
-    const firstCli = clis[0]?.id;
-    if (!firstCli) {
-      return;
+  const nextInitialKey = `${initialForm.cliId}::${initialForm.workdir}::${initialForm.model}`;
+  const nextCliKey = clis.map((cli) => cli.id).join("|");
+  if (view.lastInitialKey !== nextInitialKey || view.lastCliKey !== nextCliKey) {
+    const firstCli = clis[0]?.id ?? "";
+    const merged: SessionForm = {
+      cliId: view.form.cliId || initialForm.cliId || firstCli,
+      workdir: view.form.workdir || initialForm.workdir,
+      model: view.form.model || initialForm.model,
+    };
+    const cliExists = merged.cliId && clis.some((cli) => cli.id === merged.cliId);
+    if (!cliExists && firstCli) {
+      merged.cliId = firstCli;
     }
-    setForm((current) => {
-      if (current.cliId && clis.some((cli) => cli.id === current.cliId)) {
-        return current;
-      }
-      return { ...current, cliId: firstCli };
-    });
-  }, [clis]);
-
-  const cliOptions = useMemo(
-    () => clis.map((cli) => ({ id: cli.id, label: cli.label ?? cli.id })),
-    [clis],
-  );
+    view.form = merged;
+    view.lastInitialKey = nextInitialKey;
+    view.lastCliKey = nextCliKey;
+  }
 
   const handleSubmit = async (): Promise<void> => {
-    if (submitting) {
+    if (view.submitting) {
       return;
     }
-    setSubmitting(true);
-    setError(null);
+    view.submitting = true;
+    view.error = null;
+    reRender();
     try {
-      await onCreate(form);
+      await onCreate(view.form);
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Failed to create session";
-      setError(message);
+      view.error = message;
     } finally {
-      setSubmitting(false);
+      view.submitting = false;
+      reRender();
     }
   };
+
+  const cliOptions = clis.map((cli) => ({ id: cli.id, label: cli.label ?? cli.id }));
 
   return (
     <section className="session-creator" data-testid="session-create-panel">
@@ -69,10 +74,11 @@ export function SessionCreatorPanel({
           CLI:
           <select
             data-testid="session-create-cli"
-            value={form.cliId}
-            onChange={(event) =>
-              setForm({ ...form, cliId: event.target.value })
-            }
+            value={view.form.cliId}
+            onChange={(event) => {
+              view.form = { ...view.form, cliId: event.target.value };
+              reRender();
+            }}
             disabled={clis.length === 0}
           >
             {clis.length === 0 ? (
@@ -90,10 +96,11 @@ export function SessionCreatorPanel({
           <input
             data-testid="session-create-workdir"
             type="text"
-            value={form.workdir}
-            onChange={(event) =>
-              setForm({ ...form, workdir: event.target.value })
-            }
+            value={view.form.workdir}
+            onChange={(event) => {
+              view.form = { ...view.form, workdir: event.target.value };
+              reRender();
+            }}
             placeholder="/tmp"
           />
         </label>
@@ -102,10 +109,11 @@ export function SessionCreatorPanel({
           <input
             data-testid="session-create-model"
             type="text"
-            value={form.model}
-            onChange={(event) =>
-              setForm({ ...form, model: event.target.value })
-            }
+            value={view.form.model}
+            onChange={(event) => {
+              view.form = { ...view.form, model: event.target.value };
+              reRender();
+            }}
             placeholder="gpt-5.1-codex"
           />
         </label>
@@ -114,16 +122,16 @@ export function SessionCreatorPanel({
           data-testid="session-create-submit"
           onClick={() => void handleSubmit()}
           disabled={
-            submitting ||
+            view.submitting ||
             clis.length === 0 ||
-            !form.cliId ||
-            !form.workdir ||
-            !form.model
+            !view.form.cliId ||
+            !view.form.workdir ||
+            !view.form.model
           }
         >
-          {submitting ? "Creating..." : "Create Session"}
+          {view.submitting ? "Creating..." : "Create Session"}
         </button>
-        {error ? <p className="error-text">{error}</p> : null}
+        {view.error ? <p className="error-text">{view.error}</p> : null}
       </div>
     </section>
   );

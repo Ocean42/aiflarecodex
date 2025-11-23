@@ -192,6 +192,33 @@ export function getAssistantMessages(page: Page, sessionId: string) {
   );
 }
 
+export function getSessionTab(page: Page, sessionId: string) {
+  return page
+    .locator('[data-testid="session-workspace"] .dv-tab')
+    .filter({ hasText: sessionId.slice(0, 6) })
+    .first();
+}
+
+export async function expectTabActive(page: Page, sessionId: string): Promise<void> {
+  const tab = getSessionTab(page, sessionId);
+  await expect(tab).toBeVisible();
+  await expect
+    .poll(async () => {
+      return await page.evaluate((id) => window.getSessionState?.(id)?.visible ?? null, sessionId);
+    })
+    .toBe(true);
+}
+
+export async function expectTabInactive(page: Page, sessionId: string): Promise<void> {
+  const tab = getSessionTab(page, sessionId);
+  await expect(tab).toBeVisible();
+  await expect
+    .poll(async () => {
+      return await page.evaluate((id) => window.getSessionState?.(id)?.visible ?? null, sessionId);
+    })
+    .toBe(false);
+}
+
 export async function fetchSessionEventStats(
   request: APIRequestContext,
 ): Promise<{
@@ -351,4 +378,43 @@ export async function appendTimelineEvents(
     const body = await res.text();
     throw new Error(`Failed to append timeline events (${res.status()}): ${body}`);
   }
+}
+
+export async function getTimelineScrollMetrics(
+  page: Page,
+  sessionId: string,
+): Promise<{ scrollTop: number; scrollHeight: number; clientHeight: number }> {
+  const selector = `[data-testid='session-timeline-${sessionId}']`;
+  return page.$eval(selector, (el) => {
+    const target = el as HTMLElement;
+    return {
+      scrollTop: target.scrollTop,
+      scrollHeight: target.scrollHeight,
+      clientHeight: target.clientHeight,
+    };
+  });
+}
+
+export async function scrollTimelineTo(
+  page: Page,
+  sessionId: string,
+  position: "top" | "middle" | "bottom",
+): Promise<void> {
+  const selector = `[data-testid='session-timeline-${sessionId}']`;
+  await page.$eval(
+    selector,
+    (el, pos) => {
+      const target = el as HTMLElement;
+      const maxScroll = target.scrollHeight - target.clientHeight;
+      if (pos === "top") {
+        target.scrollTop = 0;
+      } else if (pos === "middle") {
+        target.scrollTop = maxScroll / 2;
+      } else {
+        target.scrollTop = maxScroll;
+      }
+      target.dispatchEvent(new Event("scroll", { bubbles: true }));
+    },
+    position,
+  );
 }
