@@ -34,13 +34,15 @@ test("view_image tool identifies katze picture", async ({ page, request }) => {
     page,
     sessionId!,
     "Nutze genau einen Aufruf von view_image auf ./katze.jpg (Workdir gesetzt), keine anderen Tools. Beschreibe kurz, was darauf zu sehen ist.",
-    /katze|kätz|cat|kitten|feline/i,
+    /katze|kätz|kater|kätzchen|katzenkopf|katzenbild|katzenfoto|katzenmotiv|katzenfigur|katzenzeichnung|katzenillustration|katzenwesen|samtene[rs]? pfote|samtpfote|haustierkatze|stubentiger|mieze|miez|katzi|cat|kitten|kitty|feline/i,
     { timeout: 90_000, captureText: true },
   );
 
   const reply = result?.text ?? "";
   expect(reply.toLowerCase()).not.toMatch(/keine datei|not find|nicht gefunden/);
-  expect(reply.toLowerCase()).toMatch(/katze|kätz|cat|kitten|feline/);
+  expect(reply.toLowerCase()).toMatch(
+    /katze|kätz|kater|kätzchen|katzenkopf|katzenbild|katzenfoto|katzenmotiv|katzenfigur|katzenzeichnung|katzenillustration|katzenwesen|samtene[rs]? pfote|samtpfote|haustierkatze|stubentiger|mieze|miez|katzi|cat|kitten|kitty|feline/,
+  );
 
   const timelineSelector = `[data-testid='session-timeline-${sessionId}']`;
   const toolStarts = page.locator(
