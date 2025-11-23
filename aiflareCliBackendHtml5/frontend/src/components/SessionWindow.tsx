@@ -68,7 +68,7 @@ export function SessionWindow({
 
   const summary = appState.sessions.get(sessionId) ?? null;
   const trackerState = getSessionState(sessionId);
-  const isRunning = trackerState.running;
+  const isRunning = trackerState.running || summary?.status === "running";
   const title = deriveSessionTitle(summary ?? undefined, sessionId);
 
   function updateSessionStatus(status: SessionSummary["status"]): void {
@@ -97,6 +97,8 @@ export function SessionWindow({
     reRender();
     setSessionRunning(sessionId, true);
     updateSessionStatus("running");
+    view.sending = false;
+    reRender();
     const controller = new AbortController();
     currentRequest.current = controller;
     try {

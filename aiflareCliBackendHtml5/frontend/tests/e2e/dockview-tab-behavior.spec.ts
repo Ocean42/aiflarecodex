@@ -58,11 +58,11 @@ test("background tab stays inactive; spinner and unread indicator show correctly
   // Background session should finish without stealing focus and show unread indicator
   await expect
     .poll(async () => await getSessionTab(page, sessionRight).innerText(), { timeout: 90_000 })
-    .toMatch(/•/);
+    .toMatch(/🟣/);
   await expectTabInactive(page, sessionRight);
 
   // When user visits the tab, unread marker clears
   await getSessionTab(page, sessionRight).click();
   await expectTabActive(page, sessionRight);
-  await expect(getSessionTab(page, sessionRight)).not.toContainText("•");
+  await expect(getSessionTab(page, sessionRight)).not.toContainText("🟣");
 });

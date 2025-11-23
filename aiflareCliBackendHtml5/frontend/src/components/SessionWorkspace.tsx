@@ -230,8 +230,8 @@ export function SessionWorkspace({
     const running = session?.status === "running" || state.running || isSessionRunning(mode.sessionId);
     const unread = state.unread || isSessionUnread(mode.sessionId);
     const spinner = running ? "⏳ " : "";
-    const unreadDot = unread ? "• " : "";
-    return `${spinner}${unreadDot}${baseTitle}`;
+    const unreadLabel = unread ? "🟣 " : "";
+    return `${spinner}${unreadLabel}${baseTitle}`;
   }
 
   function syncPanelData(): void {
